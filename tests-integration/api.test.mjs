@@ -139,6 +139,19 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(oldIdentity.status,401);
   const newIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
   assert.equal(newIdentity.status,200);
+
+  // A rotated credential invalidates the already authenticated bot socket.
+  const freshBot=await request("/api/v1/guilds/"+id+"/bots","POST",{app_id:appId,can_read_events:true},tokenA);
+  assert.equal(freshBot.status,201);
+  const connectedBot=await botSocket(rotated.data.bot_token,id);
+  try{
+   const revoked=closedSocket(connectedBot.ws,4004);
+   const newerToken=await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenA);
+   assert.equal(newerToken.status,200);
+   await revoked;
+   const oldBot=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
+   assert.equal(oldBot.status,401);
+  }finally{connectedBot.ws.close()}
   for(let n=0;n<3;n++)assert.equal((await request("/api/v1/auth/register","POST",{username:"extra_"+suffix+"_"+n,password:"another long test password 123"})).status,201);
   assert.equal((await request("/api/v1/auth/register","POST",{username:"over_"+suffix,password:"another long test password 123"})).status,429);
 

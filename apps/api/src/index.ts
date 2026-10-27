@@ -536,7 +536,7 @@ app.get("/bot-gateway",{websocket:true},socket=>{
  let lastHeartbeat=Date.now();
  let activeTokenHash:string|null=null,checkingCredential=false;
  let windowStart=Date.now(),windowMessages=0;
- const interval=30000;
+ const interval=process.env.NODE_ENV==="test"?1000:30000;
  const watchdog=setInterval(async()=>{
   if(Date.now()-lastHeartbeat>interval*2.5){socket.close(4009,"Heartbeat timeout");return}
   if(!appId||!activeTokenHash||checkingCredential||socket.readyState!==1)return;

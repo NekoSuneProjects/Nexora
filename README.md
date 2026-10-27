@@ -101,3 +101,6 @@ CI now connects through the user WebSocket, expires its session directly in Post
 
 ## Bot Gateway credential revalidation
 Authenticated bot WebSockets now recheck their application ID and token hash against PostgreSQL every 30 seconds, closing with code 4004 if the app is revoked or the credential rotated. Community subscriptions also verify the current token hash. This reduces stale-credential windows but is not instantaneous cross-instance revocation; production deployments require a shared revocation bus.
+
+## Live bot credential rotation test
+CI authenticates a bot WebSocket, rotates its credential, and checks that the next server credential check closes the connection with code 4004. In test mode the bot watchdog uses a one-second interval; production retains 30 seconds. This still is not instantaneous revocation.
