@@ -45,12 +45,14 @@ async function broadcastBotMetadata(channelId:string,messageId:string){
  for(const socket of botSockets.get(guildId)??[]){
   if(socket.readyState!==1)continue;
   const appId=botSocketApplication.get(socket);
-  if(!appId)continue;
-  const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL",[guildId,appId]);
+  const credentialHash=botSocketTokenHash.get(socket);
+  if(!appId||!credentialHash)continue;
+  const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL AND a.bot_token_hash=$3",[guildId,appId,credentialHash]);
   if(allowed.rowCount)socket.send(JSON.stringify({op:0,t:"MESSAGE_METADATA_CREATE",s:null,d:{guild_id:guildId,channel_id:channelId,message_id:messageId}}));
  }
 }
 const botSocketApplication=new WeakMap<any,string>();
+const botSocketTokenHash=new WeakMap<any,string>();
 const socketIdentity = new WeakMap<any,string>();
 const socketSubscriptions = new WeakMap<any,Set<string>>();
 function evictMemberSockets(userId:string,channelIds:string[]){
@@ -182,6 +184,18 @@ app.post("/api/v1/developer/apps",async(request,reply)=>{
  await db.query("INSERT INTO developer_apps(id,owner_id,name,bot_token_hash) VALUES($1,$2,$3,$4)",[id,user.id,valid.data.name,hashToken(token)]);
  return reply.code(201).send({id,name:valid.data.name,bot_token:token,warning:"Save this token. It will not be displayed again."});
 });
+
+app.post("/api/v1/developer/apps/:id/rotate-token",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid app ID"});
+ const token=randomBytes(32).toString("hex");
+ const rotated=await db.query("UPDATE developer_apps SET bot_token_hash=$1 WHERE id=$2 AND owner_id=$3 AND revoked_at IS NULL RETURNING id",[hashToken(token),id,user.id]);
+ if(!rotated.rowCount)return reply.code(404).send({message:"Active developer application not found"});
+ return {id,bot_token:token,warning:"Store this credential securely. The previous token is now invalid."};
+});
+
 app.get("/api/v1/developer/apps",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
@@ -482,7 +496,7 @@ app.get("/bot-gateway",{websocket:true},socket=>{
     if(!/^[a-f0-9]{64}$/.test(raw)){socket.close(4004,"Invalid bot token");return}
     const found=await db.query("SELECT id FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(raw)]);
     if(!found.rowCount){socket.close(4004,"Invalid bot token");return}
-    const authenticatedId:string=found.rows[0].id;appId=authenticatedId;botSocketApplication.set(socket,authenticatedId);
+    const authenticatedId:string=found.rows[0].id;appId=authenticatedId;botSocketApplication.set(socket,authenticatedId);botSocketTokenHash.set(socket,hashToken(raw));
     socket.send(JSON.stringify({op:0,t:"READY",s:null,d:{bot_id:appId}}));return
    }
    if(packet.op===42&&appId){

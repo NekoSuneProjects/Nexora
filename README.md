@@ -71,3 +71,6 @@ Bot applications can connect to `/bot-gateway` with WebSocket and send op 2 `{to
 
 ## Example metadata bot
 After creating a developer application and installing it in your community with `can_read_events: true`, run `NEXORA_BOT_TOKEN=... NEXORA_GUILD_ID=... node examples/metadata-bot.mjs` with Node 22+. Set `NEXORA_GATEWAY_URL=wss://...` for nonlocal deployments; **plain ws:// is only appropriate for local development**. The example receives opaque message identifiers, not message contents, and does not support automatic reconnect yet.
+
+## Bot credential rotation
+The owner may call `POST /api/v1/developer/apps/:id/rotate-token` (authenticated human Bearer session) to atomically replace an active application's bot token. Only the new token is returned, once; the previous credential fails REST authentication and is rejected for future bot event delivery, including on already-established WebSockets. Keep credentials secret, use TLS/WSS outside localhost, and remember that this is still a prototype.

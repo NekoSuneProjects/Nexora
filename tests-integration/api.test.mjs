@@ -91,6 +91,13 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    const unexpected=await Promise.race([bot.receive("MESSAGE_METADATA_CREATE").then(()=>true).catch(()=>false),sleep(400).then(()=>false)]);
    assert.equal(unexpected,false);
   }finally{bot.ws.close()}
+  const rotated=await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenA);
+  assert.equal(rotated.status,200);
+  assert.notEqual(rotated.data.bot_token,botToken);
+  const oldIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+botToken}});
+  assert.equal(oldIdentity.status,401);
+  const newIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
+  assert.equal(newIdentity.status,200);
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
