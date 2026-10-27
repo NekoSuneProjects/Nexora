@@ -104,6 +104,44 @@ app.post("/api/v1/auth/logout-all",async(request,reply)=>{
  return reply.code(204).send();
 });
 
+
+const deviceInput=z.object({name:z.string().trim().min(1).max(80),identity_key:z.string().regex(/^[A-Za-z0-9_-]{43}$/)});
+app.post("/api/v1/devices",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const data=deviceInput.safeParse(request.body);
+ if(!data.success)return reply.code(400).send({message:"Invalid device public-key record"});
+ const id=randomUUID();
+ try {
+  const result=await db.query("INSERT INTO user_devices(id,user_id,name,identity_key) VALUES($1,$2,$3,$4) RETURNING id,name,identity_key,created_at",[id,user.id,data.data.name,data.data.identity_key]);
+  return reply.code(201).send(result.rows[0]);
+ }catch(e:any){if(e.code==="23505")return reply.code(409).send({message:"Key already registered"});throw e}
+});
+app.get("/api/v1/devices",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const result=await db.query("SELECT id,name,identity_key,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[user.id]);
+ return result.rows;
+});
+app.get("/api/v1/users/:id/devices",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid user ID"});
+ // Public keys are intended for client-side verification, never a server attestation of trust.
+ const result=await db.query("SELECT id,identity_key,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[id]);
+ return result.rows;
+});
+app.delete("/api/v1/devices/:id",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid device ID"});
+ const result=await db.query("UPDATE user_devices SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL RETURNING id",[id,user.id]);
+ if(!result.rowCount)return reply.code(404).send({message:"Device not found"});
+ return reply.code(204).send();
+});
+
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });

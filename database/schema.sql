@@ -62,3 +62,14 @@ CREATE TABLE IF NOT EXISTS guild_invites (
   uses integer NOT NULL DEFAULT 0 CHECK(uses >= 0)
 );
 CREATE INDEX IF NOT EXISTS guild_invites_guild_idx ON guild_invites(guild_id);
+
+CREATE TABLE IF NOT EXISTS user_devices (
+ id uuid PRIMARY KEY,
+ user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ identity_key text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ revoked_at timestamptz,
+ UNIQUE(user_id,identity_key)
+);
+CREATE INDEX IF NOT EXISTS user_devices_lookup ON user_devices(user_id) WHERE revoked_at IS NULL;

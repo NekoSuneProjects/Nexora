@@ -5,7 +5,7 @@ An independent self-hosted chat platform under active development. Not based on 
 
 ## Current status: early API foundation, not production-ready
 
-Implemented: active session count and revoke-all-sessions, owner-only channel creation and renaming, owner-created expiring limited-use community invites and member joining, editable profiles and manually added **unverified** Twitch/YouTube/GitHub/Steam profile links, basic browser sign-in and guild/channel browsing, register/login/logout, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
+Implemented: device public-key registration/listing/revocation (not yet E2EE), active session count and revoke-all-sessions, owner-only channel creation and renaming, owner-created expiring limited-use community invites and member joining, editable profiles and manually added **unverified** Twitch/YouTube/GitHub/Steam profile links, basic browser sign-in and guild/channel browsing, register/login/logout, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
 
 **No working E2EE client or cross-device key management yet.** Ciphertext storage alone does not guarantee privacy against the server; do not use this project for sensitive communication. **Discord.js compatibility is also not ready.** Voice/video, screen sharing, gaming player cards, Discord template import, profile animation, OAuth and bots remain planned.
 
@@ -41,3 +41,6 @@ OAuth account ownership verification is not implemented. All manually added link
 
 ## Invites
 Community owners can create random 24-byte invite codes at `POST /api/v1/guilds/:id/invites` with `max_uses` and `expires_hours`. Authenticated users can join at `POST /api/v1/invites/:code/join`. Only hashes of invite codes are stored. Existing memberships do not use another invite slot. Invites are secrets: share only with intended members.
+
+## Device key groundwork
+Authenticated users can register a 32-byte base64url-encoded public identity key using `POST /api/v1/devices`, list devices, fetch a user's device public keys, and revoke their own device records. These APIs never ask for private keys. **A malicious server could substitute public keys; device verification, key transparency, encrypted backups, signed key bundles, and cryptographic client integration remain unimplemented. This is not end-to-end encryption.** Revoking a record does not yet rotate any conversation keys.
