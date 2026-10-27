@@ -53,6 +53,13 @@ async function broadcastBotMetadata(channelId:string,messageId:string){
 }
 const botSocketApplication=new WeakMap<any,string>();
 const botSocketTokenHash=new WeakMap<any,string>();
+const botConnections=new Map<string,Set<any>>();
+function closeBotConnections(appId:string){
+ const connections=botConnections.get(appId);
+ if(!connections)return;
+ for(const socket of [...connections])socket.close(4004,"Bot credential revoked");
+ botConnections.delete(appId);
+}
 const socketIdentity = new WeakMap<any,string>();
 const userConnections = new Map<string,Set<any>>();
 const socketSessionHash = new WeakMap<any,string>();
@@ -245,6 +252,7 @@ app.post("/api/v1/developer/apps/:id/rotate-token",async(request,reply)=>{
  const token=randomBytes(32).toString("hex");
  const rotated=await db.query("UPDATE developer_apps SET bot_token_hash=$1 WHERE id=$2 AND owner_id=$3 AND revoked_at IS NULL RETURNING id",[hashToken(token),id,user.id]);
  if(!rotated.rowCount)return reply.code(404).send({message:"Active developer application not found"});
+ closeBotConnections(id);
  return {id,bot_token:token,warning:"Store this credential securely. The previous token is now invalid."};
 });
 
@@ -261,6 +269,7 @@ app.delete("/api/v1/developer/apps/:id",async(request,reply)=>{
  if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid app ID"});
  const result=await db.query("UPDATE developer_apps SET revoked_at=now() WHERE id=$1 AND owner_id=$2 AND revoked_at IS NULL RETURNING id",[id,user.id]);
  if(!result.rowCount)return reply.code(404).send({message:"App not found"});
+ closeBotConnections(id);
  return reply.code(204).send();
 });
 // Separate early bot identity endpoint; bot credentials cannot authenticate as humans.
@@ -563,6 +572,8 @@ app.get("/bot-gateway",{websocket:true},socket=>{
     const found=await db.query("SELECT id FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(raw)]);
     if(!found.rowCount){socket.close(4004,"Invalid bot token");return}
     const authenticatedId:string=found.rows[0].id;appId=authenticatedId;activeTokenHash=hashToken(raw);botSocketApplication.set(socket,authenticatedId);botSocketTokenHash.set(socket,activeTokenHash);
+    if(!botConnections.has(authenticatedId))botConnections.set(authenticatedId,new Set());
+    botConnections.get(authenticatedId)!.add(socket);
     socket.send(JSON.stringify({op:0,t:"READY",s:null,d:{bot_id:appId}}));return
    }
    if(packet.op===42&&appId&&activeTokenHash){
@@ -585,6 +596,8 @@ app.get("/bot-gateway",{websocket:true},socket=>{
  });
  socket.on("close",()=>{
   clearInterval(watchdog);
+  const activeApp=botSocketApplication.get(socket);
+  if(activeApp){const connections=botConnections.get(activeApp);connections?.delete(socket);if(!connections?.size)botConnections.delete(activeApp)}
   for(const guildId of subscriptions){botSockets.get(guildId)?.delete(socket);if(!botSockets.get(guildId)?.size)botSockets.delete(guildId)}
  });
 });

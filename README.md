@@ -107,3 +107,6 @@ CI authenticates a bot WebSocket, rotates its credential, and checks that the ne
 
 ## CI assertion regression
 Updated the bot rotation source check to match the current credential-hash assignment, and added an integration check that another user cannot rotate a developer application they do not own.
+
+## Immediate local bot disconnects
+Bot token rotation and app revocation now close all authenticated bot WebSockets associated with that application in the current API process (4004). This supplements the 30-second PostgreSQL watchdog on other processes. In a multi-instance setup, remote sockets may remain connected until their next check; shared invalidation remains unimplemented.
