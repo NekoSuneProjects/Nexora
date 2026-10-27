@@ -1,5 +1,4 @@
-import test from "node:test";import assert from "node:assert/strict";import{webcrypto}from"node:crypto";
-globalThis.crypto=webcrypto;const {createDevice,publicBundle,fingerprint,createRoomKey,encryptMessage,decryptMessage,wrapRoomKey,unwrapRoomKey}=await import("../apps/web/crypto.mjs");
+import test from "node:test";import assert from "node:assert/strict";const {createDevice,publicBundle,fingerprint,createRoomKey,encryptMessage,decryptMessage,wrapRoomKey,unwrapRoomKey}=await import("../apps/web/crypto.mjs");
 test("devices exchange an authenticated room key and messages bind room sender epoch",async()=>{
  const alice=await createDevice(),bob=await createDevice();const bundle=await publicBundle(bob);
  const key=await createRoomKey();const context={room:"room-1",epoch:1,sender:"alice"};

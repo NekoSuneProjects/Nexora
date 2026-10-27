@@ -8,7 +8,34 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const scrypt = promisify(scryptCallback);
-const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
+const app = Fastify({
+ logger:{redact:["req.headers.authorization","req.headers.cookie","req.body.password","req.body.token","res.headers.set-cookie"]},
+ bodyLimit:1024*1024
+});
+// Same-origin frontend: reject browser cross-site mutations and WebSocket handshakes.
+// Non-browser CLI calls without Origin are allowed; enforce TLS and credential controls at the proxy.
+app.addHook("onRequest",async(request,reply)=>{
+ const origin=request.headers.origin;
+ if(origin){
+  let parsed:URL;
+  try{parsed=new URL(origin)}catch{return reply.code(403).send({message:"Invalid Origin"})}
+  const forwardedProto=request.headers["x-forwarded-proto"];
+  // Reverse-proxy deployments must set PUBLIC_BASE_URL and overwrite forwarded headers.
+  const expected=process.env.PUBLIC_BASE_URL
+   ? new URL(process.env.PUBLIC_BASE_URL).origin
+   : (request.protocol+"://"+request.headers.host);
+  if(parsed.origin!==expected)return reply.code(403).send({message:"Cross-origin requests are disabled"});
+ }
+});
+app.addHook("onSend",async(_request,reply,payload)=>{
+ reply.header("X-Content-Type-Options","nosniff");
+ reply.header("Referrer-Policy","no-referrer");
+ reply.header("X-Frame-Options","DENY");
+ reply.header("Permissions-Policy","camera=(), microphone=(), geolocation=()");
+ reply.header("Content-Security-Policy","default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+ reply.header("Cache-Control","no-store");
+ return payload;
+});
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const port = Number(process.env.PORT || 3000);
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
