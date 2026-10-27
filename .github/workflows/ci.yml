@@ -8,6 +8,23 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: nexora_test
+          POSTGRES_PASSWORD: nexora_test_ci_only
+          POSTGRES_DB: nexora_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexora_test -d nexora_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://nexora_test:nexora_test_ci_only@127.0.0.1:5432/nexora_test
+      HOST: 127.0.0.1
+      PORT: 3100
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,3 +34,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: node --check apps/web/app.js
+      - name: Set up PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/schema.sql
+      - name: Integration tests
+        run: node --test tests-integration/*.test.mjs
