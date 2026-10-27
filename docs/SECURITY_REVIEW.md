@@ -41,3 +41,6 @@ Credentials, hashed session tokens, bot tokens and E2EE private keys are high-va
 - [ ] Track findings as GitHub issues with assignees and remediation evidence.
 
 **Security conclusion:** Nexora remains a developer preview; the new headers, Origin guard and logging redaction are incremental controls, not proof of overall security.
+
+## Incremental cross-instance event bus (PostgreSQL LISTEN/NOTIFY)
+Each API instance now listens to `nexora_security` and receives user-session, bot-token, guild-member invalidation, and message notifications. On message delivery, the receiver rechecks both the session and guild membership in PostgreSQL; bot notifications continue through the permission-controlled metadata emitter. This is **best-effort pub/sub**, not durable delivery: PostgreSQL LISTEN/NOTIFY can lose messages while an instance is disconnected; reconnect orchestration, fencing, transactional outbox and multi-instance integration tests are still release blockers. A listener error closes the API process rather than continuing without security notifications. Do not mark P0 complete until verified.

@@ -114,11 +114,42 @@ function evictMemberSockets(userId:string,channelIds:string[]){
   if(!set.size)sockets.delete(id);
  }
 }
-function broadcast(channelId: string, payload: unknown) {
-  for (const socket of sockets.get(channelId) ?? []) {
-    if (socket.readyState === 1) socket.send(JSON.stringify(payload));
-  }
+// PostgreSQL notification bus: every API instance must LISTEN to the same database.
+const eventsClient=await db.connect();
+async function publishSecurityEvent(payload:Record<string,string>){
+ await db.query("SELECT pg_notify('nexora_security', $1)",[JSON.stringify(payload)]);
 }
+async function processSecurityEvent(event:any){
+ if(!event||typeof event!=="object")return;
+ if(event.kind==="session"&&uuid.safeParse(event.user).success)closeUserConnections(event.user,event.hash);
+ if(event.kind==="bot"&&uuid.safeParse(event.app).success)closeBotConnections(event.app);
+ if(event.kind==="member"&&uuid.safeParse(event.user).success&&uuid.safeParse(event.guild).success){
+  const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[event.guild]);
+  evictMemberSockets(event.user,channels.rows.map((r:{id:string})=>r.id));
+ }
+ if(event.kind==="message"&&uuid.safeParse(event.message).success&&uuid.safeParse(event.channel).success){
+  const found=await db.query("SELECT m.id,m.channel_id,m.author_id,m.ciphertext,m.algorithm,m.created_at FROM messages m WHERE m.id=$1 AND m.channel_id=$2",[event.message,event.channel]);
+  if(!found.rowCount)return;
+  const row=found.rows[0];
+  // Revalidate session and guild membership for each recipient at delivery time.
+  for(const socket of sockets.get(event.channel)??[]){
+   const user=socketIdentity.get(socket),hash=socketSessionHash.get(socket);
+   if(socket.readyState!==1||!user||!hash)continue;
+   const allowed=await db.query("SELECT 1 FROM sessions s JOIN guild_members gm ON gm.user_id=s.user_id JOIN channels c ON c.guild_id=gm.guild_id WHERE s.token_hash=$1 AND s.user_id=$2 AND s.expires_at>now() AND c.id=$3",[hash,user,event.channel]);
+   if(allowed.rowCount)socket.send(JSON.stringify({op:0,t:"MESSAGE_CREATE",s:null,d:row}));
+   else{socket.close(4004,"Authorization revoked");}
+  }
+  await broadcastBotMetadata(event.channel,event.message);
+ }
+}
+eventsClient.on("notification",msg=>{
+ if(msg.channel!=="nexora_security"||!msg.payload)return;
+ try{void processSecurityEvent(JSON.parse(msg.payload)).catch(error=>app.log.error(error))}
+ catch(error){app.log.warn(error)}
+});
+eventsClient.on("error",error=>{app.log.error(error);process.exitCode=1;void app.close()});
+await eventsClient.query("LISTEN nexora_security");
+
 await app.register(websocket);
 app.get("/health", async () => ({ status: "ok", service: "nexora" }));
 const frontend = fileURLToPath(new URL("../../../web/index.html", import.meta.url));
@@ -180,7 +211,7 @@ app.post("/api/v1/auth/logout", async (request, reply) => {
   if (!raw) return reply.code(401).send({ message: "Unauthorized" });
   const sessionHash=hashToken(raw[1]);
   const owner=await db.query("DELETE FROM sessions WHERE token_hash=$1 RETURNING user_id",[sessionHash]);
-  if(owner.rows[0])closeUserConnections(owner.rows[0].user_id,sessionHash);
+  if(owner.rows[0]){closeUserConnections(owner.rows[0].user_id,sessionHash);await publishSecurityEvent({kind:"session",user:owner.rows[0].user_id,hash:sessionHash})}
   return reply.code(204).send();
 });
 
@@ -195,6 +226,7 @@ app.post("/api/v1/auth/logout-all",async(request,reply)=>{
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  await db.query("DELETE FROM sessions WHERE user_id=$1",[user.id]);
  closeUserConnections(user.id);
+ await publishSecurityEvent({kind:"session",user:user.id});
  return reply.code(204).send();
 });
 
@@ -257,6 +289,7 @@ app.post("/api/v1/developer/apps/:id/rotate-token",async(request,reply)=>{
  const rotated=await db.query("UPDATE developer_apps SET bot_token_hash=$1 WHERE id=$2 AND owner_id=$3 AND revoked_at IS NULL RETURNING id",[hashToken(token),id,user.id]);
  if(!rotated.rowCount)return reply.code(404).send({message:"Active developer application not found"});
  closeBotConnections(id);
+ await publishSecurityEvent({kind:"bot",app:id});
  return {id,bot_token:token,warning:"Store this credential securely. The previous token is now invalid."};
 });
 
@@ -274,6 +307,7 @@ app.delete("/api/v1/developer/apps/:id",async(request,reply)=>{
  const result=await db.query("UPDATE developer_apps SET revoked_at=now() WHERE id=$1 AND owner_id=$2 AND revoked_at IS NULL RETURNING id",[id,user.id]);
  if(!result.rowCount)return reply.code(404).send({message:"App not found"});
  closeBotConnections(id);
+ await publishSecurityEvent({kind:"bot",app:id});
  return reply.code(204).send();
 });
 // Separate early bot identity endpoint; bot credentials cannot authenticate as humans.
@@ -527,6 +561,7 @@ app.delete("/api/v1/guilds/:id/members/:userId",async(request,reply)=>{
  await db.query("DELETE FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,userId]);
  const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[id]);
  evictMemberSockets(userId,channels.rows.map((row:{id:string})=>row.id));
+ await publishSecurityEvent({kind:"member",user:userId,guild:id});
  return reply.code(204).send();
 });
 
@@ -558,8 +593,7 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   const messageId=randomUUID();
   const r=await db.query("INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) VALUES ($1,$2,$3,$4,$5) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
     [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]);
-  broadcast(id,{ op:0,t:"MESSAGE_CREATE",s:null,d:r.rows[0] });
-  void broadcastBotMetadata(id,r.rows[0].id).catch(error=>app.log.error(error));
+  await publishSecurityEvent({kind:"message",channel:id,message:r.rows[0].id});
   return reply.code(201).send(r.rows[0]);
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
