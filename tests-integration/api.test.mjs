@@ -21,6 +21,31 @@ async function request(path,method="GET",body,token){
  let data=null;try{data=await res.json()}catch{}
  return {status:res.status,data};
 }
+
+async function botSocket(token,guildId){
+ const ws=new WebSocket("ws://127.0.0.1:3100/bot-gateway");
+ const queue=[];
+ const listeners=[];
+ ws.addEventListener("message",event=>{
+  const packet=JSON.parse(event.data);
+  if(listeners.length)listeners.shift()(packet);else queue.push(packet);
+ });
+ const next=()=>queue.length?Promise.resolve(queue.shift()):new Promise(resolve=>listeners.push(resolve));
+ const receive=async(type)=>{
+  for(let i=0;i<8;i++){
+   const packet=await Promise.race([next(),sleep(2500).then(()=>{throw Error("Bot Gateway timeout waiting for "+type)})]);
+   if(packet.t===type||packet.op===type)return packet;
+  }
+  throw Error("Expected "+type);
+ };
+ await receive(10);
+ ws.send(JSON.stringify({op:2,d:{token}}));
+ await receive("READY");
+ ws.send(JSON.stringify({op:42,d:{guild_id:guildId}}));
+ await receive("GUILD_SUBSCRIBED");
+ return {ws,receive};
+}
+
 test("API uses a real PostgreSQL database and enforces community membership",async()=>{
  try{
   await ready();
@@ -46,6 +71,26 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal((await request("/api/v1/guilds/"+id+"/channels","POST",{name:"should-fail"},tokenB)).status,403);
   assert.equal((await request("/api/v1/guilds/"+id+"/members/"+(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id,"DELETE",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
+
+  // Verify actual bot Gateway delivery against PostgreSQL and WebSocket.
+  const dev=await request("/api/v1/developer/apps","POST",{name:"CI metadata bot"},tokenA);
+  assert.equal(dev.status,201);
+  const appId=dev.data.id,botToken=dev.data.bot_token;
+  assert.equal((await request("/api/v1/guilds/"+id+"/bots","POST",{app_id:appId,can_read_events:true},tokenA)).status,201);
+  const bot=await botSocket(botToken,id);
+  try{
+   const sent=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(sent.status,201);
+   const event=await bot.receive("MESSAGE_METADATA_CREATE");
+   assert.deepEqual(event.d,{guild_id:id,channel_id:channelId,message_id:sent.data.id});
+   assert.equal(Object.hasOwn(event.d,"ciphertext"),false);
+   assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenA)).status,204);
+   const after=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only-2",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(after.status,201);
+   // Permission is checked for every emission, so uninstalling prevents additional events.
+   const unexpected=await Promise.race([bot.receive("MESSAGE_METADATA_CREATE").then(()=>true).catch(()=>false),sleep(400).then(()=>false)]);
+   assert.equal(unexpected,false);
+  }finally{bot.ws.close()}
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
