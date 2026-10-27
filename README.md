@@ -65,3 +65,6 @@ Community owners may install their own active developer apps via `POST /api/v1/g
 
 ## Bot-scoped community discovery
 `GET /api/v1/bots/@me/guilds` lists communities where a bot is installed. `GET /api/v1/bots/guilds/:id/channels` lists channel metadata only when its community installation has `can_read_events=true`. These endpoints use `Authorization: Bot <token>`; no message bodies or key material are returned. Live bot Gateway subscriptions and Discord.js compatibility remain unimplemented.
+
+## Experimental bot Gateway
+Bot applications can connect to `/bot-gateway` with WebSocket and send op 2 `{token}` to authenticate, then op 42 `{guild_id}` to subscribe when `can_read_events` is granted. Op 1 heartbeats and op 43 unsubscribe are supported. Bots receive only `MESSAGE_METADATA_CREATE` events containing guild/channel/message identifiers, **never message content or ciphertext**. Each emission rechecks the bot's installed permission and revocation status. This is a custom experimental protocol, not the Discord Gateway. It is single-process, without replay, rate limiting or reconnect resume.

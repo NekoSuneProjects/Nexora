@@ -37,6 +37,20 @@ async function member(userId: string, channelId: string) {
   return r.rowCount !== null && r.rowCount > 0;
 }
 const sockets = new Map<string, Set<any>>();
+const botSockets = new Map<string,Set<any>>();
+async function broadcastBotMetadata(channelId:string,messageId:string){
+ const found=await db.query("SELECT guild_id FROM channels WHERE id=$1",[channelId]);
+ if(!found.rowCount)return;
+ const guildId=found.rows[0].guild_id as string;
+ for(const socket of botSockets.get(guildId)??[]){
+  if(socket.readyState!==1)continue;
+  const appId=botSocketApplication.get(socket);
+  if(!appId)continue;
+  const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL",[guildId,appId]);
+  if(allowed.rowCount)socket.send(JSON.stringify({op:0,t:"MESSAGE_METADATA_CREATE",s:null,d:{guild_id:guildId,channel_id:channelId,message_id:messageId}}));
+ }
+}
+const botSocketApplication=new WeakMap<any,string>();
 const socketIdentity = new WeakMap<any,string>();
 const socketSubscriptions = new WeakMap<any,Set<string>>();
 function evictMemberSockets(userId:string,channelIds:string[]){
@@ -445,9 +459,55 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   const r=await db.query("INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) VALUES ($1,$2,$3,$4,$5) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
     [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]);
   broadcast(id,{ op:0,t:"MESSAGE_CREATE",s:null,d:r.rows[0] });
+  void broadcastBotMetadata(id,r.rows[0].id).catch(error=>app.log.error(error));
   return reply.code(201).send(r.rows[0]);
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
+
+app.get("/bot-gateway",{websocket:true},socket=>{
+ let appId:string|null=null;
+ const subscriptions=new Set<string>();
+ let lastHeartbeat=Date.now();
+ const interval=30000;
+ const watchdog=setInterval(()=>{if(Date.now()-lastHeartbeat>interval*2.5)socket.close(4009,"Heartbeat timeout")},interval);
+ socket.send(JSON.stringify({op:10,d:{heartbeat_interval:interval}}));
+ socket.on("message",async(data:Buffer)=>{
+  try{
+   if(data.byteLength>8192){socket.close(4002,"Payload too large");return}
+   const packet=JSON.parse(data.toString());
+   if(packet.op===1){lastHeartbeat=Date.now();socket.send(JSON.stringify({op:11,d:null}));return}
+   if(packet.op===2){
+    if(appId){socket.close(4005,"Already authenticated");return}
+    const raw=String(packet.d?.token??"");
+    if(!/^[a-f0-9]{64}$/.test(raw)){socket.close(4004,"Invalid bot token");return}
+    const found=await db.query("SELECT id FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(raw)]);
+    if(!found.rowCount){socket.close(4004,"Invalid bot token");return}
+    appId=found.rows[0].id;botSocketApplication.set(socket,appId);
+    socket.send(JSON.stringify({op:0,t:"READY",s:null,d:{bot_id:appId}}));return
+   }
+   if(packet.op===42&&appId){
+    const guildId=packet.d?.guild_id;
+    if(!uuid.safeParse(guildId).success)return;
+    const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL",[guildId,appId]);
+    if(!allowed.rowCount)return;
+    if(!botSockets.has(guildId))botSockets.set(guildId,new Set());
+    botSockets.get(guildId)!.add(socket);subscriptions.add(guildId);
+    socket.send(JSON.stringify({op:0,t:"GUILD_SUBSCRIBED",s:null,d:{guild_id:guildId}}));return
+   }
+   if(packet.op===43&&appId){
+    const guildId=packet.d?.guild_id;
+    if(typeof guildId!=="string")return;
+    subscriptions.delete(guildId);botSockets.get(guildId)?.delete(socket);
+    if(!botSockets.get(guildId)?.size)botSockets.delete(guildId);
+   }
+  }catch{socket.close(4002,"Invalid bot Gateway payload")}
+ });
+ socket.on("close",()=>{
+  clearInterval(watchdog);
+  for(const guildId of subscriptions){botSockets.get(guildId)?.delete(socket);if(!botSockets.get(guildId)?.size)botSockets.delete(guildId)}
+ });
+});
+
 app.get("/gateway", { websocket:true }, (socket) => {
   let identity: Identity | null = null;
   const subscriptions = new Set<string>();
