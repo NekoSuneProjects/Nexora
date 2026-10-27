@@ -102,6 +102,19 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(guild.status,201);
   const id=guild.data.id,channelId=guild.data.channels[0].id;
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
+  // Cross-community and cross-user negative authorization checks.
+  const otherGuild=await request("/api/v10/guilds","POST",{name:"Isolated Community"},tokenB);
+  assert.equal(otherGuild.status,201);
+  const otherId=otherGuild.data.id,otherChannel=otherGuild.data.channels[0].id;
+  assert.equal((await request("/api/v10/guilds/"+otherId+"/channels","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages","POST",{ciphertext:"forbidden",algorithm:"client-encrypted-v1"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/invites","POST",{max_uses:1,expires_hours:1},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/members","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/channels","POST",{name:"forbidden-channel"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/channels/"+otherChannel,"PATCH",{name:"forbidden-rename"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/members/"+(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id,"DELETE",undefined,tokenA)).status,403);
+
   assert.equal((await request("/api/v10/users/@me","GET")).status,401);
   assert.equal((await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenB)).status,403);
   const invite=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
@@ -144,7 +157,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    await Promise.race([new Promise(resolve=>replica.once("exit",resolve)),sleep(3000)]);
   }
 
-  assert.equal((await request("/api/v1/guilds/"+id+"/members/"+(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id,"DELETE",undefined,tokenA)).status,204);
+  // Membership was revoked on the other API instance above.
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
 
   // Verify actual bot Gateway delivery against PostgreSQL and WebSocket.
