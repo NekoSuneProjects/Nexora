@@ -83,3 +83,12 @@ CREATE TABLE IF NOT EXISTS developer_apps (
  revoked_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS developer_apps_owner_idx ON developer_apps(owner_id);
+
+CREATE TABLE IF NOT EXISTS guild_bots (
+ guild_id uuid NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+ app_id uuid NOT NULL REFERENCES developer_apps(id) ON DELETE CASCADE,
+ can_read_events boolean NOT NULL DEFAULT false,
+ installed_by uuid NOT NULL REFERENCES users(id),
+ installed_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(guild_id,app_id)
+);

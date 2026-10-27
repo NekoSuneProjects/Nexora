@@ -192,6 +192,42 @@ app.get("/api/v1/bots/@me",async(request,reply)=>{
  return {id:result.rows[0].id,username:result.rows[0].name,bot:true};
 });
 
+
+const botInstallInput=z.object({app_id:z.string().uuid(),can_read_events:z.boolean().default(false)});
+app.post("/api/v1/guilds/:id/bots",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const guildId=(request.params as {id:string}).id;
+ if(!uuid.safeParse(guildId).success)return reply.code(400).send({message:"Invalid community ID"});
+ const data=botInstallInput.safeParse(request.body);
+ if(!data.success)return reply.code(400).send({message:"Invalid app ID or bot permissions"});
+ const owner=await db.query("SELECT 1 FROM guilds WHERE id=$1 AND owner_id=$2",[guildId,user.id]);
+ if(!owner.rowCount)return reply.code(403).send({message:"Only community owners may install bots"});
+ const ownedApp=await db.query("SELECT 1 FROM developer_apps WHERE id=$1 AND owner_id=$2 AND revoked_at IS NULL",[data.data.app_id,user.id]);
+ if(!ownedApp.rowCount)return reply.code(404).send({message:"Developer application not found or not owned by you"});
+ await db.query("INSERT INTO guild_bots(guild_id,app_id,can_read_events,installed_by) VALUES($1,$2,$3,$4) ON CONFLICT (guild_id,app_id) DO UPDATE SET can_read_events=EXCLUDED.can_read_events",[guildId,data.data.app_id,data.data.can_read_events,user.id]);
+ return reply.code(201).send({guild_id:guildId,app_id:data.data.app_id,can_read_events:data.data.can_read_events});
+});
+app.get("/api/v1/guilds/:id/bots",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const guildId=(request.params as {id:string}).id;
+ if(!uuid.safeParse(guildId).success)return reply.code(400).send({message:"Invalid community ID"});
+ const member=await db.query("SELECT 1 FROM guild_members WHERE guild_id=$1 AND user_id=$2",[guildId,user.id]);
+ if(!member.rowCount)return reply.code(403).send({message:"Not a member"});
+ const found=await db.query("SELECT a.id,a.name,b.can_read_events FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND a.revoked_at IS NULL ORDER BY a.name",[guildId]);
+ return found.rows;
+});
+app.delete("/api/v1/guilds/:id/bots/:appId",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const {id,appId}=request.params as {id:string,appId:string};
+ if(!uuid.safeParse(id).success||!uuid.safeParse(appId).success)return reply.code(400).send({message:"Invalid ID"});
+ const result=await db.query("DELETE FROM guild_bots USING guilds WHERE guild_bots.guild_id=$1 AND guild_bots.app_id=$2 AND guilds.id=guild_bots.guild_id AND guilds.owner_id=$3 RETURNING guild_bots.app_id",[id,appId,user.id]);
+ if(!result.rowCount)return reply.code(404).send({message:"Bot installation not found or not permitted"});
+ return reply.code(204).send();
+});
+
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });

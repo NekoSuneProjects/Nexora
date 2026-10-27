@@ -59,3 +59,6 @@ The browser and integration-test HTTP helpers now send JSON Content-Type only wh
 
 ## Developer apps (initial)
 Authenticated users may create, list and revoke developer applications. Each app is issued a 256-bit bot credential once; only its SHA-256 hash is stored. Bot credentials authenticate to `GET /api/v1/bots/@me` using `Authorization: Bot <token>`, and cannot authenticate as human sessions. **Bots cannot yet be invited, receive Gateway events or execute discord.js commands.** Production token rotation, rate limits and granular scopes remain future work.
+
+## Initial community bot installations
+Community owners may install their own active developer apps via `POST /api/v1/guilds/:id/bots`, list installed apps, or uninstall them. The `can_read_events` permission is stored explicitly but **is not yet an implemented event delivery mechanism**. Bot credentials are not accepted by normal human endpoints and cannot read encrypted messages. Cross-owner OAuth installation, bot Gateway sessions, interactions and discord.js parity remain future work.
