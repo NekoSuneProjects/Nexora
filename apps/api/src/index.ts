@@ -532,6 +532,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
   const subscriptions = new Set<string>();
   socketSubscriptions.set(socket,subscriptions);
   let lastHeartbeat = Date.now();
+  let windowStart = Date.now(), windowMessages = 0;
   const heartbeatMs = 30000;
   const watchdog = setInterval(() => {
     if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) socket.close(4009, "Heartbeat timeout");
@@ -540,6 +541,9 @@ app.get("/gateway", { websocket:true }, (socket) => {
   socket.on("message", async (data: Buffer) => {
     try {
       if (data.byteLength > 8192) { socket.close(4002,"Payload too large"); return; }
+      const now = Date.now();
+      if (now - windowStart >= 10000) { windowStart = now; windowMessages = 0; }
+      if (++windowMessages > 100) { socket.close(4008,"Gateway rate limit exceeded"); return; }
       const payload=JSON.parse(data.toString());
       if (payload.op===1) { lastHeartbeat=Date.now(); socket.send(JSON.stringify({ op:11,d:null })); return; }
       if (payload.op===2) {
@@ -551,6 +555,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
       } else if (payload.op===42 && identity) {
         const channelId=payload.d?.channel_id;
         if (!uuid.safeParse(channelId).success || !await member(identity.id,channelId)) return;
+        if (!subscriptions.has(channelId) && subscriptions.size >= 25) { socket.close(4008,"Subscription limit exceeded"); return; }
         if (!sockets.has(channelId)) sockets.set(channelId,new Set());
         sockets.get(channelId)!.add(socket);
         subscriptions.add(channelId);

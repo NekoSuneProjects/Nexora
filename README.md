@@ -80,3 +80,6 @@ The experimental metadata bot now reconnects with capped exponential backoff (1â
 
 ## Experimental Gateway abuse controls
 The bot Gateway now closes a WebSocket exceeding 100 inbound messages per 10 seconds or 25 subscribed communities (code 4008). Payloads remain capped at 8 KiB and heartbeat timeouts continue to apply. These **per-connection** controls are not substitutes for IP/account admission limits, distributed quotas, or production anti-abuse controls.
+
+## Human Gateway per-connection limits
+The user Gateway now enforces the same 8 KiB frame cap, 100 incoming messages per 10 seconds and 25 live channel subscriptions per connection as the bot Gateway (close code 4008 on rate/subscription excess). This does not provide per-IP, cross-connection or cross-instance rate limiting; production abuse controls are outstanding.
