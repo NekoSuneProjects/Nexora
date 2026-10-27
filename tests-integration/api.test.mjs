@@ -139,6 +139,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(oldIdentity.status,401);
   const newIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
   assert.equal(newIdentity.status,200);
+  assert.equal((await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenB)).status,404);
 
   // A rotated credential invalidates the already authenticated bot socket.
   const freshBot=await request("/api/v1/guilds/"+id+"/bots","POST",{app_id:appId,can_read_events:true},tokenA);

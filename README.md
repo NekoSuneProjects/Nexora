@@ -104,3 +104,6 @@ Authenticated bot WebSockets now recheck their application ID and token hash aga
 
 ## Live bot credential rotation test
 CI authenticates a bot WebSocket, rotates its credential, and checks that the next server credential check closes the connection with code 4004. In test mode the bot watchdog uses a one-second interval; production retains 30 seconds. This still is not instantaneous revocation.
+
+## CI assertion regression
+Updated the bot rotation source check to match the current credential-hash assignment, and added an integration check that another user cannot rotate a developer application they do not own.
