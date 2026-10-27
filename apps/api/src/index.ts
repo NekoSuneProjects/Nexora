@@ -482,7 +482,7 @@ app.get("/bot-gateway",{websocket:true},socket=>{
     if(!/^[a-f0-9]{64}$/.test(raw)){socket.close(4004,"Invalid bot token");return}
     const found=await db.query("SELECT id FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(raw)]);
     if(!found.rowCount){socket.close(4004,"Invalid bot token");return}
-    appId=found.rows[0].id;botSocketApplication.set(socket,appId);
+    const authenticatedId:string=found.rows[0].id;appId=authenticatedId;botSocketApplication.set(socket,authenticatedId);
     socket.send(JSON.stringify({op:0,t:"READY",s:null,d:{bot_id:appId}}));return
    }
    if(packet.op===42&&appId){
