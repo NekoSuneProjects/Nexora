@@ -92,3 +92,6 @@ The API now reserves up to five valid registration attempts per client IP per ho
 
 ## Gateway session revocation (single process)
 The user Gateway now tracks WebSocket connections by authenticated account and session hash. `POST /api/v1/auth/logout` closes connections for the revoked session; `POST /api/v1/auth/logout-all` closes all account connections (close code 4004), preventing those sockets receiving further in-process broadcasts. **Other API instances do not receive these invalidations**; multi-instance deployment still requires shared session revocation and event coordination.
+
+## Gateway session expiry checks
+On each heartbeat-watchdog interval (30 seconds), authenticated user Gateway connections revalidate their session hash against PostgreSQL and close with code 4004 if revoked or expired. This supplements immediate same-process logout invalidation and helps detect session deletion by another API instance, but **is not instantaneous distributed revocation**. A database check failure closes the connection rather than continuing indefinitely.

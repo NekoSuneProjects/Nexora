@@ -584,10 +584,19 @@ app.get("/gateway", { websocket:true }, (socket) => {
   const subscriptions = new Set<string>();
   socketSubscriptions.set(socket,subscriptions);
   let lastHeartbeat = Date.now();
+  let sessionHash:string|null=null;
+  let checkingSession=false;
   let windowStart = Date.now(), windowMessages = 0;
   const heartbeatMs = 30000;
-  const watchdog = setInterval(() => {
-    if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) socket.close(4009, "Heartbeat timeout");
+  const watchdog = setInterval(async () => {
+    if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) {socket.close(4009,"Heartbeat timeout");return}
+    if(!sessionHash||checkingSession||socket.readyState!==1)return;
+    checkingSession=true;
+    try{
+      const live=await db.query("SELECT 1 FROM sessions WHERE token_hash=$1 AND expires_at>now()",[sessionHash]);
+      if(!live.rowCount)socket.close(4004,"Session expired or revoked");
+    }catch(error){app.log.error(error);socket.close(1011,"Session check failed")}
+    finally{checkingSession=false}
   }, heartbeatMs);
   socket.send(JSON.stringify({ op:10,d:{ heartbeat_interval:heartbeatMs } }));
   socket.on("message", async (data: Buffer) => {
@@ -603,7 +612,8 @@ app.get("/gateway", { websocket:true }, (socket) => {
         identity=await auth("Bearer "+String(payload.d?.token ?? ""));
         if(identity){
           socketIdentity.set(socket,identity.id);
-          socketSessionHash.set(socket,hashToken(String(payload.d?.token ?? "")));
+          sessionHash=hashToken(String(payload.d?.token ?? ""));
+          socketSessionHash.set(socket,sessionHash);
           if(!userConnections.has(identity.id))userConnections.set(identity.id,new Set());
           userConnections.get(identity.id)!.add(socket);
         }
