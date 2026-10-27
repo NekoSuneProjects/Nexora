@@ -52,3 +52,13 @@ CREATE TABLE IF NOT EXISTS user_social_links (
   verified boolean NOT NULL DEFAULT false,
   PRIMARY KEY (user_id,provider)
 );
+
+CREATE TABLE IF NOT EXISTS guild_invites (
+  code_hash text PRIMARY KEY,
+  guild_id uuid NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  created_by uuid NOT NULL REFERENCES users(id),
+  expires_at timestamptz NOT NULL,
+  max_uses integer NOT NULL CHECK(max_uses BETWEEN 1 AND 100),
+  uses integer NOT NULL DEFAULT 0 CHECK(uses >= 0)
+);
+CREATE INDEX IF NOT EXISTS guild_invites_guild_idx ON guild_invites(guild_id);

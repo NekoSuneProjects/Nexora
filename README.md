@@ -5,7 +5,7 @@ An independent self-hosted chat platform under active development. Not based on 
 
 ## Current status: early API foundation, not production-ready
 
-Implemented: editable profiles and manually added **unverified** Twitch/YouTube/GitHub/Steam profile links, basic browser sign-in and guild/channel browsing, register/login/logout, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
+Implemented: owner-created expiring limited-use community invites and member joining, editable profiles and manually added **unverified** Twitch/YouTube/GitHub/Steam profile links, basic browser sign-in and guild/channel browsing, register/login/logout, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
 
 **No working E2EE client or cross-device key management yet.** Ciphertext storage alone does not guarantee privacy against the server; do not use this project for sensitive communication. **Discord.js compatibility is also not ready.** Voice/video, screen sharing, gaming player cards, Discord template import, profile animation, OAuth and bots remain planned.
 
@@ -38,3 +38,6 @@ Read [architecture and security status](docs/ARCHITECTURE.md) before deploying.
 Run `database/schema.sql` again on your existing Nexora database after pulling changes. The new tables use `CREATE TABLE IF NOT EXISTS`; Docker init scripts only execute on initial database creation. Never delete a production database volume to apply schema updates.
 
 OAuth account ownership verification is not implemented. All manually added links are labelled unverified.
+
+## Invites
+Community owners can create random 24-byte invite codes at `POST /api/v1/guilds/:id/invites` with `max_uses` and `expires_hours`. Authenticated users can join at `POST /api/v1/invites/:code/join`. Only hashes of invite codes are stored. Existing memberships do not use another invite slot. Invites are secrets: share only with intended members.

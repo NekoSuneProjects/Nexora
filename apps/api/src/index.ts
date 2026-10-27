@@ -156,6 +156,44 @@ app.post("/api/v10/guilds", async (request, reply) => {
   } catch (err) { await client.query("ROLLBACK"); throw err; }
   finally { client.release(); }
 });
+
+const inviteOptions=z.object({ max_uses:z.number().int().min(1).max(100).default(10), expires_hours:z.number().int().min(1).max(168).default(24) });
+app.post("/api/v1/guilds/:id/invites",async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const id=(request.params as {id:string}).id;
+  if(!uuid.safeParse(id).success) return reply.code(400).send({message:"Invalid guild"});
+  const options=inviteOptions.safeParse(request.body ?? {});
+  if(!options.success) return reply.code(400).send({message:"Invalid invite options"});
+  // Owner-only during this milestone; future permission roles must be checked here.
+  const owner=await db.query("SELECT 1 FROM guilds WHERE id=$1 AND owner_id=$2",[id,user.id]);
+  if(!owner.rowCount) return reply.code(403).send({message:"Only the community owner may invite"});
+  const code=randomBytes(24).toString("base64url");
+  const expires=new Date(Date.now()+options.data.expires_hours*3600000);
+  await db.query("INSERT INTO guild_invites(code_hash,guild_id,created_by,expires_at,max_uses) VALUES($1,$2,$3,$4,$5)",
+   [hashToken(code),id,user.id,expires,options.data.max_uses]);
+  return reply.code(201).send({code,expires_at:expires.toISOString(),max_uses:options.data.max_uses});
+});
+app.post("/api/v1/invites/:code/join",async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const code=(request.params as {code:string}).code;
+  if(!/^[A-Za-z0-9_-]{32}$/.test(code)) return reply.code(404).send({message:"Invite not found"});
+  const client=await db.connect();
+  try {
+    await client.query("BEGIN");
+    // Lock and consume atomically so simultaneous requests cannot exceed max_uses.
+    const result=await client.query("SELECT guild_id,uses,max_uses FROM guild_invites WHERE code_hash=$1 AND expires_at>now() AND uses<max_uses FOR UPDATE",[hashToken(code)]);
+    const invite=result.rows[0];
+    if(!invite){await client.query("ROLLBACK");return reply.code(404).send({message:"Invite expired or unavailable"})}
+    const joined=await client.query("INSERT INTO guild_members(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING user_id",[invite.guild_id,user.id]);
+    if(joined.rowCount) await client.query("UPDATE guild_invites SET uses=uses+1 WHERE code_hash=$1",[hashToken(code)]);
+    await client.query("COMMIT");
+    return {guild_id:invite.guild_id,already_member:!joined.rowCount};
+  } catch(e){await client.query("ROLLBACK");throw e}
+  finally{client.release()}
+});
+
 app.get("/api/v10/users/@me/guilds", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   if (!user) return reply.code(401).send({ message:"Unauthorized" });

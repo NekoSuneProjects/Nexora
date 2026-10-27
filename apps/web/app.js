@@ -84,3 +84,14 @@ $("social-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
   await request("/api/v1/profiles/@me/links","PUT",{provider:$("provider").value,url:$("social-url").value});
   $("social-url").value="";await loadProfile();status("Unverified link saved.");
 })});
+
+$("make-invite").addEventListener("click",()=>run(async()=>{
+  if(!currentGuild)throw new Error("Select a community first");
+  const result=await request("/api/v1/guilds/"+encodeURIComponent(currentGuild)+"/invites","POST",{max_uses:10,expires_hours:24});
+  $("invite-result").textContent="Invite code (copy now): "+result.code+" — expires "+new Date(result.expires_at).toLocaleString();
+}));
+$("join-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
+  const result=await request("/api/v1/invites/"+encodeURIComponent($("invite-code").value.trim())+"/join","POST");
+  $("invite-code").value="";
+  await openGuild(result.guild_id);status(result.already_member?"Already a member.":"Joined community.");
+})});
