@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createHash } from "node:crypto";
+import pg from "pg";
 
 const base="http://127.0.0.1:3100";
-const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1"},stdio:"pipe"});
+const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1",NODE_ENV:"test"},stdio:"pipe"});
 let log="";
 processHandle.stdout.on("data",d=>{log+=d.toString()});
 processHandle.stderr.on("data",d=>{log+=d.toString()});
@@ -157,6 +159,19 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,secondSession.data.token)).status,204);
    await newClosed;
   }finally{wsOld.close();wsNew.close()}
+
+  // Simulate another API instance expiring an authenticated session directly in PostgreSQL.
+  const expiringLogin=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(expiringLogin.status,200);
+  const expiringToken=expiringLogin.data.token;
+  const expiringSocket=await userSocket(expiringToken,channelId);
+  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+  try{
+   const closed=closedSocket(expiringSocket,4004);
+   const tokenHash=createHash("sha256").update(expiringToken).digest("hex");
+   await pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1",[tokenHash]);
+   await closed;
+  }finally{expiringSocket.close();await pool.end()}
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{

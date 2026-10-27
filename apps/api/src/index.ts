@@ -587,7 +587,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
   let sessionHash:string|null=null;
   let checkingSession=false;
   let windowStart = Date.now(), windowMessages = 0;
-  const heartbeatMs = 30000;
+  const heartbeatMs = process.env.NODE_ENV === "test" ? 1000 : 30000;
   const watchdog = setInterval(async () => {
     if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) {socket.close(4009,"Heartbeat timeout");return}
     if(!sessionHash||checkingSession||socket.readyState!==1)return;

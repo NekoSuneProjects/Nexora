@@ -95,3 +95,6 @@ The user Gateway now tracks WebSocket connections by authenticated account and s
 
 ## Gateway session expiry checks
 On each heartbeat-watchdog interval (30 seconds), authenticated user Gateway connections revalidate their session hash against PostgreSQL and close with code 4004 if revoked or expired. This supplements immediate same-process logout invalidation and helps detect session deletion by another API instance, but **is not instantaneous distributed revocation**. A database check failure closes the connection rather than continuing indefinitely.
+
+## Live session-expiry integration test
+CI now connects through the user WebSocket, expires its session directly in PostgreSQL, and verifies the Gateway closes it with 4004. The API uses a 1-second watchdog interval **only with NODE_ENV=test**, so CI can test expiry promptly; normal deployments use the 30-second interval. Never configure production with NODE_ENV=test.
