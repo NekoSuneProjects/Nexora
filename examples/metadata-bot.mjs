@@ -1,10 +1,25 @@
+import { readFile, writeFile, rename } from "node:fs/promises";
 // Experimental Nexora metadata bot (Node.js 22+). Never log or commit credentials.
 // NEXORA_BOT_TOKEN=... NEXORA_GUILD_ID=... node examples/metadata-bot.mjs
 const token=process.env.NEXORA_BOT_TOKEN;
 const guildId=process.env.NEXORA_GUILD_ID;
 const url=process.env.NEXORA_GATEWAY_URL||"ws://127.0.0.1:3000/bot-gateway";
 const apiBase=process.env.NEXORA_API_URL||new URL(url.replace(/^ws/,"http")).origin;
+const cursorFile=process.env.NEXORA_CURSOR_FILE||null;
 let cursor=process.env.NEXORA_EVENT_CURSOR||null,catchingUp=false;
+async function loadCursor(){
+ if(!cursorFile||cursor)return;
+ try{
+  const saved=JSON.parse(await readFile(cursorFile,"utf8"));
+  if(saved.guild_id===guildId && typeof saved.after==="string" && /^[a-f0-9-]{36}$/i.test(saved.after))cursor=saved.after;
+ }catch(error){if(error.code!=="ENOENT")console.error("Could not load cursor:",error.message)}
+}
+async function saveCursor(next){
+ if(!cursorFile)return;
+ const tmp=cursorFile+"."+process.pid+".tmp";
+ await writeFile(tmp,JSON.stringify({guild_id:guildId,after:next})+"\\n",{mode:0o600});
+ await rename(tmp,cursorFile);
+}
 if(!token||!/^[a-f0-9]{64}$/.test(token)||!guildId){
  console.error("Provide NEXORA_BOT_TOKEN (64 hex chars) and NEXORA_GUILD_ID");
  process.exit(1);
@@ -27,7 +42,10 @@ async function catchUp(){
    for(const event of data.events){
     console.log("Recovered metadata:",event.guild_id,event.channel_id,event.message_id);
    }
-   if(data.next_after)cursor=data.next_after;
+   if(data.next_after && data.next_after!==cursor){
+    await saveCursor(data.next_after);
+    cursor=data.next_after;
+   }
    if(data.events.length<100)break;
    if(!data.next_after)throw Error("Missing cursor in full page");
   }
@@ -87,4 +105,4 @@ function stop(){
 }
 process.on("SIGINT",stop);
 process.on("SIGTERM",stop);
-connect();
+void loadCursor().then(connect).catch(error=>{console.error("Cursor startup failed:",error.message);process.exitCode=1});

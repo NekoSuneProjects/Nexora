@@ -125,3 +125,6 @@ The runnable metadata bot now polls the REST event-history endpoint after a succ
 
 ## Cursor precision fix
 Bot catch-up now compares cursor timestamps directly inside PostgreSQL so microsecond precision is retained; serializing the timestamp through JavaScript previously allowed the cursor message to reappear in subsequent pages.
+
+## Persistent example bot cursor
+Set `NEXORA_CURSOR_FILE=./bot-cursor.json` to persist the last processed REST catch-up cursor across restarts. The bot loads matching community cursors at startup, writes a temporary file with owner-only permissions, and atomically renames it after each processed page. Keep this file out of source control. `NEXORA_EVENT_CURSOR` overrides the saved value. This is **at-least-once style recovery**, not exactly-once delivery; downstream handlers should deduplicate message IDs.
