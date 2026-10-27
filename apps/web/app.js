@@ -4,7 +4,7 @@ let ws = null, heartbeat = null;
 function status(message){ $("status").textContent = message; }
 function node(tag, text){ const n=document.createElement(tag); n.textContent=text; return n; }
 async function request(path, method="GET", body){
-  const res=await fetch(path,{method,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  const res=await fetch(path,{method,headers:{...(body!==undefined?{"Content-Type":"application/json"}:{}),...(token?{Authorization:"Bearer "+token}:{})},...(body?{body:JSON.stringify(body)}:{})});
   if(!res.ok){let error;try{error=await res.json()}catch{};throw new Error(error?.message||error?.error||"HTTP "+res.status)}
   return res.status===204?null:res.json();
 }

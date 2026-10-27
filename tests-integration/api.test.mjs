@@ -17,7 +17,7 @@ async function ready(){
  throw new Error("API not ready: "+log);
 }
 async function request(path,method="GET",body,token){
- const res=await fetch(base+path,{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})});
+ const res=await fetch(base+path,{method,headers:{...(body!==undefined?{"content-type":"application/json"}:{}),...(token?{authorization:"Bearer "+token}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})});
  let data=null;try{data=await res.json()}catch{}
  return {status:res.status,data};
 }

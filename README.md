@@ -53,3 +53,6 @@ A community member list is accessible only to members; the owner may remove othe
 
 ## Membership eviction (single API process)
 Removing a member now clears their existing channel subscriptions and notifies their connected clients with `CHANNEL_ACCESS_REVOKED`, preventing further broadcast delivery through those subscriptions. This is **not sufficient for multi-instance deployments**, where event fanout and membership invalidation require a shared bus such as Redis. Existing E2EE session keys, once implemented, must be rotated separately. This prototype remains single-instance and should not be exposed publicly.
+
+## Request helper fix
+The browser and integration-test HTTP helpers now send JSON Content-Type only when sending a JSON body. Fastify rejects empty application/json requests; this previously broke empty-body actions such as join invite, sign out, and member removal.
