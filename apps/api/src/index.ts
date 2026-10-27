@@ -135,7 +135,7 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
-  if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),6,900))
+  if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),7,900))
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   const r = await db.query("SELECT id,password_hash,password_salt FROM users WHERE username=$1", [username]);
   const record = r.rows[0];
