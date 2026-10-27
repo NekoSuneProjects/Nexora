@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let token = null, currentGuild = null, currentChannel = null, currentGuildOwner = false, selfId = null;
+let ws = null, heartbeat = null;
 function status(message){ $("status").textContent = message; }
 function node(tag, text){ const n=document.createElement(tag); n.textContent=text; return n; }
 async function request(path, method="GET", body){
@@ -10,7 +11,7 @@ async function request(path, method="GET", body){
 async function signedIn(){
   const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;selfId=me.id;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
-  await loadGuilds();await loadProfile();await loadSessions();
+  await loadGuilds();await loadProfile();await loadSessions();connectGateway();
 }
 async function loadGuilds(){
   const guilds=await request("/api/v10/users/@me/guilds");
@@ -36,7 +37,9 @@ async function openGuild(id){
   }
 }
 async function openChannel(channel){
+  if(ws?.readyState===1 && currentChannel)ws.send(JSON.stringify({op:43,d:{channel_id:currentChannel}}));
   currentChannel=channel.id;$("channel-title").textContent="# "+channel.name;
+  if(ws?.readyState===1)ws.send(JSON.stringify({op:42,d:{channel_id:currentChannel}}));
   const messages=await request("/api/v10/channels/"+encodeURIComponent(channel.id)+"/messages");
   const parent=$("messages");parent.replaceChildren();
   if(!messages.length)parent.append(node("p","No encrypted message envelopes yet."));
@@ -115,3 +118,31 @@ $("logout-all").addEventListener("click",()=>run(async()=>{
  $("logged-in").classList.add("hidden");$("logged-out").classList.remove("hidden");
  status("All sessions revoked. Please sign in again.");
 }));
+
+function disconnectGateway(){
+ if(heartbeat){clearInterval(heartbeat);heartbeat=null}
+ if(ws){const old=ws;ws=null;old.close()}
+}
+async function connectGateway(){
+ disconnectGateway();
+ const discovered=await request("/api/v10/gateway");
+ const socket=new WebSocket(discovered.url);
+ ws=socket;
+ socket.onmessage=event=>{
+   if(ws!==socket)return;
+   let packet;try{packet=JSON.parse(event.data)}catch{return}
+   if(packet.op===10){
+     socket.send(JSON.stringify({op:2,d:{token}}));
+     heartbeat=setInterval(()=>{if(socket.readyState===1)socket.send(JSON.stringify({op:1,d:null}))},packet.d.heartbeat_interval);
+   }else if(packet.t==="READY"){
+     if(currentChannel)socket.send(JSON.stringify({op:42,d:{channel_id:currentChannel}}));
+     status("Real-time Gateway connected.");
+   }else if(packet.t==="MESSAGE_CREATE" && packet.d?.channel_id===currentChannel){
+     // Only opaque ciphertext is rendered, never interpreted as plaintext.
+     run(async()=>{const selected=currentChannel;const channels=await request("/api/v10/guilds/"+encodeURIComponent(currentGuild)+"/channels");const channel=channels.find(c=>c.id===selected);if(channel)await openChannel(channel)});
+   }
+ };
+ socket.onclose=()=>{if(ws!==socket)return;if(heartbeat){clearInterval(heartbeat);heartbeat=null}status("Gateway disconnected. Refresh to reconnect.")};
+}
+$("logout").addEventListener("click",disconnectGateway);
+$("logout-all").addEventListener("click",disconnectGateway);

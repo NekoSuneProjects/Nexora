@@ -312,13 +312,21 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
 app.get("/gateway", { websocket:true }, (socket) => {
-  let identity: Identity | null = null, subscriptions = new Set<string>();
-  socket.send(JSON.stringify({ op:10,d:{ heartbeat_interval:30000 } }));
+  let identity: Identity | null = null;
+  const subscriptions = new Set<string>();
+  let lastHeartbeat = Date.now();
+  const heartbeatMs = 30000;
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) socket.close(4009, "Heartbeat timeout");
+  }, heartbeatMs);
+  socket.send(JSON.stringify({ op:10,d:{ heartbeat_interval:heartbeatMs } }));
   socket.on("message", async (data: Buffer) => {
     try {
+      if (data.byteLength > 8192) { socket.close(4002,"Payload too large"); return; }
       const payload=JSON.parse(data.toString());
-      if (payload.op===1) { socket.send(JSON.stringify({ op:11,d:null })); return; }
+      if (payload.op===1) { lastHeartbeat=Date.now(); socket.send(JSON.stringify({ op:11,d:null })); return; }
       if (payload.op===2) {
+        if(identity) { socket.close(4005,"Already authenticated");return; }
         identity=await auth("Bearer "+String(payload.d?.token ?? ""));
         if (!identity) { socket.close(4004,"Authentication failed"); return; }
         socket.send(JSON.stringify({ op:0,t:"READY",s:null,d:{ user:identity } }));
@@ -328,11 +336,25 @@ app.get("/gateway", { websocket:true }, (socket) => {
         if (!sockets.has(channelId)) sockets.set(channelId,new Set());
         sockets.get(channelId)!.add(socket);
         subscriptions.add(channelId);
+        socket.send(JSON.stringify({op:0,t:"CHANNEL_SUBSCRIBED",s:null,d:{channel_id:channelId}}));
+      } else if (payload.op===43 && identity) {
+        const channelId=payload.d?.channel_id;
+        if(typeof channelId!=="string")return;
+        subscriptions.delete(channelId);
+        sockets.get(channelId)?.delete(socket);
+        if (!sockets.get(channelId)?.size) sockets.delete(channelId);
       }
     } catch { socket.close(4002,"Invalid gateway payload"); }
   });
-  socket.on("close",()=>{ for (const id of subscriptions) { sockets.get(id)?.delete(socket); if (!sockets.get(id)?.size) sockets.delete(id); } });
+  socket.on("close",()=>{
+    clearInterval(watchdog);
+    for (const id of subscriptions) {
+      sockets.get(id)?.delete(socket);
+      if (!sockets.get(id)?.size) sockets.delete(id);
+    }
+  });
 });
+
 try {
   await db.query("SELECT 1");
   await app.listen({ host: process.env.HOST || "127.0.0.1", port });

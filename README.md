@@ -44,3 +44,6 @@ Community owners can create random 24-byte invite codes at `POST /api/v1/guilds/
 
 ## Device key groundwork
 Authenticated users can register a 32-byte base64url-encoded public identity key using `POST /api/v1/devices`, list devices, fetch a user's device public keys, and revoke their own device records. These APIs never ask for private keys. **A malicious server could substitute public keys; device verification, key transparency, encrypted backups, signed key bundles, and cryptographic client integration remain unimplemented. This is not end-to-end encryption.** Revoking a record does not yet rotate any conversation keys.
+
+## Experimental real-time client
+The browser now connects to the native Gateway, authenticates, subscribes to the selected channel, and refreshes opaque message envelopes on `MESSAGE_CREATE`. Heartbeats, a basic timeout, and unsubscribe handling are implemented. This is **not** a Discord.js-compatible Gateway, and it is not a message-decryption implementation. Real-time subscriptions currently rely on membership at subscribe time; membership revocation push enforcement and multi-instance fanout still need implementation.
