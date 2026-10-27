@@ -89,3 +89,6 @@ Six failed login attempts against the same username from the same Fastify client
 
 ## Registration quota
 The API now reserves up to five valid registration attempts per client IP per hour (429 / Retry-After: 3600 thereafter), before spending resources on password hashing. Failed insertions still consume a slot to limit username probing. This in-memory, per-process quota is preliminary and requires a distributed store and proxy/IP configuration before production deployment.
+
+## Gateway session revocation (single process)
+The user Gateway now tracks WebSocket connections by authenticated account and session hash. `POST /api/v1/auth/logout` closes connections for the revoked session; `POST /api/v1/auth/logout-all` closes all account connections (close code 4004), preventing those sockets receiving further in-process broadcasts. **Other API instances do not receive these invalidations**; multi-instance deployment still requires shared session revocation and event coordination.

@@ -54,6 +54,18 @@ async function broadcastBotMetadata(channelId:string,messageId:string){
 const botSocketApplication=new WeakMap<any,string>();
 const botSocketTokenHash=new WeakMap<any,string>();
 const socketIdentity = new WeakMap<any,string>();
+const userConnections = new Map<string,Set<any>>();
+const socketSessionHash = new WeakMap<any,string>();
+function closeUserConnections(userId:string,sessionHash?:string){
+ const active=userConnections.get(userId);
+ if(!active)return;
+ for(const socket of [...active]){
+  if(sessionHash && socketSessionHash.get(socket)!==sessionHash)continue;
+  socket.close(4004,"Session revoked");
+  active.delete(socket);
+ }
+ if(!active.size)userConnections.delete(userId);
+}
 const socketSubscriptions = new WeakMap<any,Set<string>>();
 function evictMemberSockets(userId:string,channelIds:string[]){
  for(const id of channelIds){
@@ -155,7 +167,9 @@ app.post("/api/v1/auth/login", async (request, reply) => {
 app.post("/api/v1/auth/logout", async (request, reply) => {
   const raw = /^Bearer ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
   if (!raw) return reply.code(401).send({ message: "Unauthorized" });
-  await db.query("DELETE FROM sessions WHERE token_hash=$1", [hashToken(raw[1])]);
+  const sessionHash=hashToken(raw[1]);
+  const owner=await db.query("DELETE FROM sessions WHERE token_hash=$1 RETURNING user_id",[sessionHash]);
+  if(owner.rows[0])closeUserConnections(owner.rows[0].user_id,sessionHash);
   return reply.code(204).send();
 });
 
@@ -169,6 +183,7 @@ app.post("/api/v1/auth/logout-all",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  await db.query("DELETE FROM sessions WHERE user_id=$1",[user.id]);
+ closeUserConnections(user.id);
  return reply.code(204).send();
 });
 
@@ -586,7 +601,12 @@ app.get("/gateway", { websocket:true }, (socket) => {
       if (payload.op===2) {
         if(identity) { socket.close(4005,"Already authenticated");return; }
         identity=await auth("Bearer "+String(payload.d?.token ?? ""));
-        if(identity)socketIdentity.set(socket,identity.id);
+        if(identity){
+          socketIdentity.set(socket,identity.id);
+          socketSessionHash.set(socket,hashToken(String(payload.d?.token ?? "")));
+          if(!userConnections.has(identity.id))userConnections.set(identity.id,new Set());
+          userConnections.get(identity.id)!.add(socket);
+        }
         if (!identity) { socket.close(4004,"Authentication failed"); return; }
         socket.send(JSON.stringify({ op:0,t:"READY",s:null,d:{ user:identity } }));
       } else if (payload.op===42 && identity) {
@@ -608,6 +628,8 @@ app.get("/gateway", { websocket:true }, (socket) => {
   });
   socket.on("close",()=>{
     clearInterval(watchdog);
+    const userId=socketIdentity.get(socket);
+    if(userId){const connections=userConnections.get(userId);connections?.delete(socket);if(!connections?.size)userConnections.delete(userId)}
     for (const id of subscriptions) {
       sockets.get(id)?.delete(socket);
       if (!sockets.get(id)?.size) sockets.delete(id);
