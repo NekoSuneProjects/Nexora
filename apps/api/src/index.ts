@@ -101,16 +101,38 @@ app.post("/api/v1/auth/register", async (request, reply) => {
     throw e;
   }
 });
+// Single-process login abuse mitigation. Production deployments need shared IP/account quotas.
+const loginFailures = new Map<string,{count:number,expires:number}>();
+const LOGIN_WINDOW_MS = 15*60*1000;
+function failureKey(ip:string,username:string){return hashToken(ip+"\\0"+username.toLowerCase())}
+function loginLimited(key:string,now=Date.now()){
+ const entry=loginFailures.get(key);
+ if(entry && entry.expires<=now){loginFailures.delete(key);return false}
+ return Boolean(entry && entry.count>=6);
+}
+function recordLoginFailure(key:string,now=Date.now()){
+ const existing=loginFailures.get(key);
+ if(!existing || existing.expires<=now)loginFailures.set(key,{count:1,expires:now+LOGIN_WINDOW_MS});
+ else existing.count++;
+ if(loginFailures.size>5000){
+  for(const [k,v] of loginFailures){if(v.expires<=now)loginFailures.delete(k)}
+  if(loginFailures.size>5000)loginFailures.delete(loginFailures.keys().next().value!);
+ }
+}
+
 app.post("/api/v1/auth/login", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
+  const key=failureKey(request.ip,username);
+  if(loginLimited(key))return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   const r = await db.query("SELECT id,password_hash,password_salt FROM users WHERE username=$1", [username]);
   const record = r.rows[0];
   // Avoid a fast unknown-user path and never leak which usernames exist.
   const hash = await passwordHash(password, record?.password_salt ?? "00000000000000000000000000000000");
   const a = Buffer.from(hash,"hex"), b = Buffer.from(record?.password_hash ?? "00".repeat(64),"hex");
-  if (!record || !timingSafeEqual(a,b)) return reply.code(401).send({ error: "Invalid credentials" });
+  if (!record || !timingSafeEqual(a,b)) {recordLoginFailure(key);return reply.code(401).send({ error: "Invalid credentials" });}
+  loginFailures.delete(key);
   const token = randomBytes(32).toString("hex");
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
   return { token, token_type: "Bearer", expires_in: 604800 };

@@ -83,3 +83,6 @@ The bot Gateway now closes a WebSocket exceeding 100 inbound messages per 10 sec
 
 ## Human Gateway per-connection limits
 The user Gateway now enforces the same 8 KiB frame cap, 100 incoming messages per 10 seconds and 25 live channel subscriptions per connection as the bot Gateway (close code 4008 on rate/subscription excess). This does not provide per-IP, cross-connection or cross-instance rate limiting; production abuse controls are outstanding.
+
+## Login abuse mitigation
+Six failed login attempts against the same username from the same Fastify client IP temporarily block further attempts for 15 minutes with HTTP 429 and Retry-After. Keys are SHA-256 hashed and the in-memory cache is bounded. This is **single-process, best-effort** protection, not a distributed rate limiter; an attacker can vary source IP/usernames, and shared proxies may affect the grouping. Configure trusted proxy handling carefully and add production-wide rate limits and account safeguards before public launch.

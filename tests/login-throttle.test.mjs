@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import {readFile} from "node:fs/promises";
+test("login failures throttle by trusted Fastify IP and username",async()=>{const api=await readFile(new URL("../apps/api/src/index.ts",import.meta.url),"utf8");assert.match(api,/failureKey\(request.ip,username\)/);assert.match(api,/loginLimited\(key\)/);assert.match(api,/reply.code\(429\)/);assert.match(api,/recordLoginFailure\(key\)/);assert.match(api,/loginFailures.delete\(key\)/);});

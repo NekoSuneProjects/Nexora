@@ -57,6 +57,9 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   const loginB=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
   assert.equal(loginA.status,200);assert.equal(loginB.status,200);
   const tokenA=loginA.data.token,tokenB=loginB.data.token;
+  for(let attempt=0;attempt<6;attempt++)assert.equal((await request("/api/v1/auth/login","POST",{username:a,password:"intentionally-wrong-password"})).status,401);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:a,password:"intentionally-wrong-password"})).status,429);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"})).status,200);
   const guild=await request("/api/v10/guilds","POST",{name:"CI Community"},tokenA);
   assert.equal(guild.status,201);
   const id=guild.data.id,channelId=guild.data.channels[0].id;
