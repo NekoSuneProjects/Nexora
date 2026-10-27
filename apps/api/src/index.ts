@@ -200,6 +200,33 @@ app.get("/api/v10/users/@me/guilds", async (request, reply) => {
   const r=await db.query("SELECT g.id,g.name,g.owner_id FROM guilds g JOIN guild_members gm ON gm.guild_id=g.id WHERE gm.user_id=$1",[user.id]);
   return r.rows;
 });
+
+const channelInput=z.object({name:z.string().trim().min(1).max(80).regex(/^[a-z0-9_-]+$/)});
+app.post("/api/v1/guilds/:id/channels", async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid community ID"});
+ const data=channelInput.safeParse(request.body);
+ if(!data.success)return reply.code(400).send({message:"Channel names must be 1–80 lowercase letters, digits, - or _"});
+ const owner=await db.query("SELECT 1 FROM guilds WHERE id=$1 AND owner_id=$2",[id,user.id]);
+ if(!owner.rowCount)return reply.code(403).send({message:"Only community owners can create channels"});
+ const channelId=randomUUID();
+ const result=await db.query("INSERT INTO channels(id,guild_id,name) VALUES ($1,$2,$3) RETURNING id,guild_id,name,kind",[channelId,id,data.data.name]);
+ return reply.code(201).send(result.rows[0]);
+});
+app.patch("/api/v1/channels/:id", async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid channel ID"});
+ const data=channelInput.safeParse(request.body);
+ if(!data.success)return reply.code(400).send({message:"Invalid channel name"});
+ const result=await db.query("UPDATE channels c SET name=$1 FROM guilds g WHERE c.id=$2 AND g.id=c.guild_id AND g.owner_id=$3 RETURNING c.id,c.guild_id,c.name,c.kind",[data.data.name,id,user.id]);
+ if(!result.rowCount)return reply.code(403).send({message:"Only community owners can rename channels"});
+ return result.rows[0];
+});
+
 app.get("/api/v10/guilds/:id/channels", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   const id = (request.params as any).id;

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let token = null, currentGuild = null, currentChannel = null;
+let token = null, currentGuild = null, currentChannel = null, currentGuildOwner = false, selfId = null;
 function status(message){ $("status").textContent = message; }
 function node(tag, text){ const n=document.createElement(tag); n.textContent=text; return n; }
 async function request(path, method="GET", body){
@@ -8,7 +8,7 @@ async function request(path, method="GET", body){
   return res.status===204?null:res.json();
 }
 async function signedIn(){
-  const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;
+  const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;selfId=me.id;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
   await loadGuilds();await loadProfile();
 }
@@ -20,7 +20,9 @@ async function loadGuilds(){
     if(guild.id===currentGuild)button.classList.add("selected");
     button.onclick=()=>run(()=>openGuild(guild.id));$("guilds").append(button);
   }
-  if(currentGuild && !guilds.some(g=>g.id===currentGuild))currentGuild=null;
+  const active=guilds.find(g=>g.id===currentGuild);currentGuildOwner=!!active && active.owner_id===selfId;
+  $("create-channel").classList.toggle("hidden",!currentGuildOwner);
+  if(currentGuild && !active)currentGuild=null;
 }
 async function openGuild(id){
   currentGuild=id;currentChannel=null;$("messages").replaceChildren();$("channel-title").textContent="Select a channel";
@@ -30,6 +32,7 @@ async function openGuild(id){
   for(const channel of channels){
     const button=node("button","# "+channel.name);button.type="button";
     button.onclick=()=>run(()=>openChannel(channel));$("channels").append(button);
+    if(currentGuildOwner){const rename=node("button","Rename");rename.type="button";rename.onclick=()=>run(async()=>{const name=prompt("New channel name",channel.name);if(name===null)return;await request("/api/v1/channels/"+encodeURIComponent(channel.id),"PATCH",{name});await openGuild(currentGuild)});$("channels").append(rename)}
   }
 }
 async function openChannel(channel){
@@ -94,4 +97,10 @@ $("join-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
   const result=await request("/api/v1/invites/"+encodeURIComponent($("invite-code").value.trim())+"/join","POST");
   $("invite-code").value="";
   await openGuild(result.guild_id);status(result.already_member?"Already a member.":"Joined community.");
+})});
+
+$("create-channel").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
+ if(!currentGuild)throw new Error("Select a community first.");
+ const channel=await request("/api/v1/guilds/"+encodeURIComponent(currentGuild)+"/channels","POST",{name:$("channel-name").value});
+ $("channel-name").value="";await openGuild(currentGuild);await openChannel(channel);status("Channel created.");
 })});
