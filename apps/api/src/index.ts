@@ -4,6 +4,8 @@ import { Pool } from "pg";
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const scrypt = promisify(scryptCallback);
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
@@ -42,7 +44,17 @@ function broadcast(channelId: string, payload: unknown) {
 }
 await app.register(websocket);
 app.get("/health", async () => ({ status: "ok", service: "nexora" }));
-app.get("/api/v10/gateway", async (request) => ({ url: `ws://${request.headers.host ?? "localhost:3000"}/gateway` }));
+const frontend = fileURLToPath(new URL("../../../web/index.html", import.meta.url));
+const frontendJs = fileURLToPath(new URL("../../../web/app.js", import.meta.url));
+app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(await readFile(frontend)));
+app.get("/app.js", async (_request, reply) => reply.header("Cache-Control", "no-store").type("application/javascript").send(await readFile(frontendJs)));
+app.get("/api/v10/gateway", async (request) => {
+  const host = request.headers.host ?? "localhost:3000";
+  // Only use forwarded proto if an administrator has configured a trusted proxy.
+  const scheme = process.env.PUBLIC_BASE_URL?.startsWith("https://") ? "wss" : "ws";
+  const publicHost = process.env.PUBLIC_BASE_URL ? new URL(process.env.PUBLIC_BASE_URL).host : host;
+  return { url: `${scheme}://${publicHost}/gateway` };
+});
 app.post("/api/v1/auth/register", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid username or password" });
@@ -71,6 +83,12 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const token = randomBytes(32).toString("hex");
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
   return { token, token_type: "Bearer", expires_in: 604800 };
+});
+app.post("/api/v1/auth/logout", async (request, reply) => {
+  const raw = /^Bearer ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
+  if (!raw) return reply.code(401).send({ message: "Unauthorized" });
+  await db.query("DELETE FROM sessions WHERE token_hash=$1", [hashToken(raw[1])]);
+  return reply.code(204).send();
 });
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);

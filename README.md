@@ -5,7 +5,7 @@ An independent self-hosted chat platform under active development. Not based on 
 
 ## Current status: early API foundation, not production-ready
 
-Implemented: register/login, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
+Implemented: basic browser sign-in and guild/channel browsing, register/login/logout, PostgreSQL users and hashed sessions, create/list guilds, default encrypted-envelope text channel, message history and a simple authenticated WebSocket event gateway.
 
 **No working E2EE client or cross-device key management yet.** Ciphertext storage alone does not guarantee privacy against the server; do not use this project for sensitive communication. **Discord.js compatibility is also not ready.** Voice/video, screen sharing, gaming player cards, Discord template import, profile animation, OAuth and bots remain planned.
 
@@ -17,7 +17,9 @@ Requirements: Node.js 22+, PostgreSQL 17+, npm.
 2. Initialise the DB using `database/schema.sql`.
 3. `npm install`
 4. `npm run dev`
-5. Test `GET http://127.0.0.1:3000/health`
+5. Open `http://127.0.0.1:3000/` for the developer UI; API health is `/health`.
+
+The initial web client does **not** send chat messages until proper client-side E2EE has been designed. It can browse encrypted envelopes, but cannot decrypt them.
 
 Or for isolated Docker development: set `POSTGRES_PASSWORD` and `DATABASE_URL` in `.env`, then run `docker compose up --build`. Docker API binds to loopback only. Do not expose to the public internet yet.
 
