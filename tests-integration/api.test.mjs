@@ -110,6 +110,40 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(join.status,200);assert.equal(join.data.already_member,false);
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,200);
   assert.equal((await request("/api/v1/guilds/"+id+"/channels","POST",{name:"should-fail"},tokenB)).status,403);
+  // Multi-process PostgreSQL notification test: cross-instance metadata delivery and membership eviction.
+  const replica=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3101",HOST:"127.0.0.1",NODE_ENV:"test"},stdio:"pipe"});
+  let replicaLog="";replica.stdout.on("data",d=>replicaLog+=d.toString());replica.stderr.on("data",d=>replicaLog+=d.toString());
+  let remote;
+  try{
+   let online=false;
+   for(let n=0;n<50;n++){if(replica.exitCode!==null)throw Error("Replica exited "+replicaLog);
+    try{if((await fetch("http://127.0.0.1:3101/health")).ok){online=true;break}}catch{}
+    await sleep(100);
+   }
+   assert.ok(online,"Replica must start");
+   remote=new WebSocket("ws://127.0.0.1:3101/gateway");
+   const packets=[];remote.addEventListener("message",e=>packets.push(JSON.parse(e.data)));
+   async function waitPacket(type){
+    for(let n=0;n<70;n++){const pos=packets.findIndex(p=>p.t===type||p.op===type);
+     if(pos>=0)return packets.splice(pos,1)[0];
+     await sleep(40);
+    }
+    throw Error("Remote socket timed out waiting for "+type);
+   }
+   await waitPacket(10);
+   remote.send(JSON.stringify({op:2,d:{token:tokenB}}));await waitPacket("READY");
+   remote.send(JSON.stringify({op:42,d:{channel_id:channelId}}));await waitPacket("CHANNEL_SUBSCRIBED");
+   const sentAcross=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-across-instances",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(sentAcross.status,201);
+   assert.equal((await waitPacket("MESSAGE_CREATE")).d.id,sentAcross.data.id);
+   const removeId=(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id;
+  // Member B was removed by the cross-instance revocation test.
+   await waitPacket("CHANNEL_ACCESS_REVOKED");
+  }finally{
+   remote?.close();replica.kill("SIGTERM");
+   await Promise.race([new Promise(resolve=>replica.once("exit",resolve)),sleep(3000)]);
+  }
+
   assert.equal((await request("/api/v1/guilds/"+id+"/members/"+(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id,"DELETE",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
 
