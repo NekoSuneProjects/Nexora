@@ -38,3 +38,17 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS messages_channel_idx ON messages(channel_id,created_at,id);
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  display_name text NOT NULL DEFAULT '',
+  bio text NOT NULL DEFAULT '',
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS user_social_links (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider text NOT NULL CHECK (provider IN ('twitch','youtube','github','steam')),
+  url text NOT NULL,
+  verified boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (user_id,provider)
+);

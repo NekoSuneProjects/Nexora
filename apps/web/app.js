@@ -10,7 +10,7 @@ async function request(path, method="GET", body){
 async function signedIn(){
   const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
-  await loadGuilds();
+  await loadGuilds();await loadProfile();
 }
 async function loadGuilds(){
   const guilds=await request("/api/v10/users/@me/guilds");
@@ -61,3 +61,26 @@ $("logout").addEventListener("click",()=>run(async()=>{
     $("logged-in").classList.add("hidden");$("logged-out").classList.remove("hidden");status("Signed out.");
   }
 }));
+
+async function loadProfile(){
+  const profile=await request("/api/v1/profiles/@me");
+  $("display-name").value=profile.display_name;
+  $("bio").value=profile.bio;
+  $("social-links").replaceChildren();
+  for(const link of profile.social_links){
+    const row=document.createElement("p");
+    const anchor=node("a",link.provider+" (unverified)");
+    anchor.href=link.url;anchor.target="_blank";anchor.rel="noopener noreferrer";
+    const remove=node("button","Remove");remove.type="button";
+    remove.onclick=()=>run(async()=>{await request("/api/v1/profiles/@me/links/"+link.provider,"DELETE");await loadProfile()});
+    row.append(anchor," ",remove);$("social-links").append(row);
+  }
+}
+$("profile-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
+  await request("/api/v1/profiles/@me","PUT",{display_name:$("display-name").value,bio:$("bio").value});
+  status("Profile saved.");
+})});
+$("social-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
+  await request("/api/v1/profiles/@me/links","PUT",{provider:$("provider").value,url:$("social-url").value});
+  $("social-url").value="";await loadProfile();status("Unverified link saved.");
+})});

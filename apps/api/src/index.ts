@@ -94,6 +94,51 @@ app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });
 });
+
+const profileInput=z.object({ display_name:z.string().trim().max(50),bio:z.string().trim().max(500) });
+const socialInput=z.object({provider:z.enum(["twitch","youtube","github","steam"]),url:z.string().url().max(400)});
+const socialDomains: Record<string,string[]> = {
+  twitch:["twitch.tv","www.twitch.tv"],
+  youtube:["youtube.com","www.youtube.com","youtu.be"],
+  github:["github.com","www.github.com"],
+  steam:["steamcommunity.com","www.steamcommunity.com"]
+};
+app.get("/api/v1/profiles/@me", async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const profile=await db.query("SELECT display_name,bio FROM user_profiles WHERE user_id=$1",[user.id]);
+  const links=await db.query("SELECT provider,url,verified FROM user_social_links WHERE user_id=$1 ORDER BY provider",[user.id]);
+  return {user,display_name:profile.rows[0]?.display_name ?? "",bio:profile.rows[0]?.bio ?? "",social_links:links.rows};
+});
+app.put("/api/v1/profiles/@me", async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const data=profileInput.safeParse(request.body);
+  if(!data.success) return reply.code(400).send({message:"Invalid profile"});
+  await db.query("INSERT INTO user_profiles(user_id,display_name,bio) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,bio=EXCLUDED.bio,updated_at=now()",[user.id,data.data.display_name,data.data.bio]);
+  return {updated:true};
+});
+app.put("/api/v1/profiles/@me/links", async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const data=socialInput.safeParse(request.body);
+  if(!data.success) return reply.code(400).send({message:"Invalid social link"});
+  const url=new URL(data.data.url);
+  if(url.protocol!=="https:" || url.username || url.password || url.port || !socialDomains[data.data.provider].includes(url.hostname.toLowerCase())) {
+    return reply.code(400).send({message:"Provider URL must use its official HTTPS domain"});
+  }
+  await db.query("INSERT INTO user_social_links(user_id,provider,url,verified) VALUES($1,$2,$3,false) ON CONFLICT(user_id,provider) DO UPDATE SET url=EXCLUDED.url,verified=false",[user.id,data.data.provider,url.toString()]);
+  return {provider:data.data.provider,url:url.toString(),verified:false};
+});
+app.delete("/api/v1/profiles/@me/links/:provider", async(request,reply)=>{
+  const user=await auth(request.headers.authorization);
+  if(!user) return reply.code(401).send({message:"Unauthorized"});
+  const provider=(request.params as {provider:string}).provider;
+  if(!Object.hasOwn(socialDomains,provider)) return reply.code(400).send({message:"Invalid provider"});
+  await db.query("DELETE FROM user_social_links WHERE user_id=$1 AND provider=$2",[user.id,provider]);
+  return reply.code(204).send();
+});
+
 app.post("/api/v10/guilds", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   if (!user) return reply.code(401).send({ message: "Unauthorized" });
