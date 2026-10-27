@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const base="http://127.0.0.1:3100";
-const processHandle=spawn("npm",["run","start"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1"},stdio:"pipe"});
+const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1"},stdio:"pipe"});
 let log="";
 processHandle.stdout.on("data",d=>{log+=d.toString()});
 processHandle.stderr.on("data",d=>{log+=d.toString()});
@@ -36,6 +36,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(guild.status,201);
   const id=guild.data.id,channelId=guild.data.channels[0].id;
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
+  assert.equal((await request("/api/v10/users/@me","GET")).status,401);
   assert.equal((await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenB)).status,403);
   const invite=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
   assert.equal(invite.status,201);
@@ -49,5 +50,6 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
   processHandle.kill("SIGTERM");
+  await Promise.race([new Promise(resolve=>processHandle.once("exit",resolve)),sleep(3000)]);
  }
 },{timeout:50000});
