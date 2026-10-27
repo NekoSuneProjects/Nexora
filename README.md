@@ -98,3 +98,6 @@ On each heartbeat-watchdog interval (30 seconds), authenticated user Gateway con
 
 ## Live session-expiry integration test
 CI now connects through the user WebSocket, expires its session directly in PostgreSQL, and verifies the Gateway closes it with 4004. The API uses a 1-second watchdog interval **only with NODE_ENV=test**, so CI can test expiry promptly; normal deployments use the 30-second interval. Never configure production with NODE_ENV=test.
+
+## Bot Gateway credential revalidation
+Authenticated bot WebSockets now recheck their application ID and token hash against PostgreSQL every 30 seconds, closing with code 4004 if the app is revoked or the credential rotated. Community subscriptions also verify the current token hash. This reduces stale-credential windows but is not instantaneous cross-instance revocation; production deployments require a shared revocation bus.

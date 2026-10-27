@@ -534,9 +534,19 @@ app.get("/bot-gateway",{websocket:true},socket=>{
  let appId:string|null=null;
  const subscriptions=new Set<string>();
  let lastHeartbeat=Date.now();
+ let activeTokenHash:string|null=null,checkingCredential=false;
  let windowStart=Date.now(),windowMessages=0;
  const interval=30000;
- const watchdog=setInterval(()=>{if(Date.now()-lastHeartbeat>interval*2.5)socket.close(4009,"Heartbeat timeout")},interval);
+ const watchdog=setInterval(async()=>{
+  if(Date.now()-lastHeartbeat>interval*2.5){socket.close(4009,"Heartbeat timeout");return}
+  if(!appId||!activeTokenHash||checkingCredential||socket.readyState!==1)return;
+  checkingCredential=true;
+  try{
+   const live=await db.query("SELECT 1 FROM developer_apps WHERE id=$1 AND bot_token_hash=$2 AND revoked_at IS NULL",[appId,activeTokenHash]);
+   if(!live.rowCount)socket.close(4004,"Bot token revoked");
+  }catch(error){app.log.error(error);socket.close(1011,"Credential check failed")}
+  finally{checkingCredential=false}
+ },interval);
  socket.send(JSON.stringify({op:10,d:{heartbeat_interval:interval}}));
  socket.on("message",async(data:Buffer)=>{
   try{
@@ -552,13 +562,13 @@ app.get("/bot-gateway",{websocket:true},socket=>{
     if(!/^[a-f0-9]{64}$/.test(raw)){socket.close(4004,"Invalid bot token");return}
     const found=await db.query("SELECT id FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(raw)]);
     if(!found.rowCount){socket.close(4004,"Invalid bot token");return}
-    const authenticatedId:string=found.rows[0].id;appId=authenticatedId;botSocketApplication.set(socket,authenticatedId);botSocketTokenHash.set(socket,hashToken(raw));
+    const authenticatedId:string=found.rows[0].id;appId=authenticatedId;activeTokenHash=hashToken(raw);botSocketApplication.set(socket,authenticatedId);botSocketTokenHash.set(socket,activeTokenHash);
     socket.send(JSON.stringify({op:0,t:"READY",s:null,d:{bot_id:appId}}));return
    }
-   if(packet.op===42&&appId){
+   if(packet.op===42&&appId&&activeTokenHash){
     const guildId=packet.d?.guild_id;
     if(!uuid.safeParse(guildId).success)return;
-    const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL",[guildId,appId]);
+    const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL AND a.bot_token_hash=$3",[guildId,appId,activeTokenHash]);
     if(!allowed.rowCount)return;
     if(!subscriptions.has(guildId)&&subscriptions.size>=25){socket.close(4008,"Subscription limit exceeded");return}
     if(!botSockets.has(guildId))botSockets.set(guildId,new Set());
