@@ -36,5 +36,9 @@ jobs:
       - run: node --check apps/web/app.js
       - name: Set up PostgreSQL schema
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/schema.sql
+      - name: Apply integrity migration twice (idempotency check)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
