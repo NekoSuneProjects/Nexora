@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS users (
+  id uuid PRIMARY KEY,
+  username text NOT NULL UNIQUE,
+  password_salt text NOT NULL,
+  password_hash text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS guilds (
+  id uuid PRIMARY KEY,
+  name text NOT NULL,
+  owner_id uuid NOT NULL REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS guild_members (
+  guild_id uuid NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (guild_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS channels (
+  id uuid PRIMARY KEY,
+  guild_id uuid NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  kind text NOT NULL DEFAULT 'encrypted_text',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id uuid PRIMARY KEY,
+  channel_id uuid NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  author_id uuid NOT NULL REFERENCES users(id),
+  ciphertext text NOT NULL,
+  algorithm text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS messages_channel_idx ON messages(channel_id,created_at,id);
