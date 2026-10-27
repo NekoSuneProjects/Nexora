@@ -128,3 +128,6 @@ Bot catch-up now compares cursor timestamps directly inside PostgreSQL so micros
 
 ## Persistent example bot cursor
 Set `NEXORA_CURSOR_FILE=./bot-cursor.json` to persist the last processed REST catch-up cursor across restarts. The bot loads matching community cursors at startup, writes a temporary file with owner-only permissions, and atomically renames it after each processed page. Keep this file out of source control. `NEXORA_EVENT_CURSOR` overrides the saved value. This is **at-least-once style recovery**, not exactly-once delivery; downstream handlers should deduplicate message IDs.
+
+## Duplicate metadata suppression
+The example bot now uses a bounded, 10,000-message in-memory ID set to avoid double-logging metadata delivered by both the live Gateway and REST catch-up. It validates guild and channel identifiers before logging and does not advance the durable cursor from live events (which can arrive out of order). Dedupe is process-local and is **not** exactly-once processing across restarts.

@@ -7,6 +7,16 @@ const url=process.env.NEXORA_GATEWAY_URL||"ws://127.0.0.1:3000/bot-gateway";
 const apiBase=process.env.NEXORA_API_URL||new URL(url.replace(/^ws/,"http")).origin;
 const cursorFile=process.env.NEXORA_CURSOR_FILE||null;
 let cursor=process.env.NEXORA_EVENT_CURSOR||null,catchingUp=false;
+// Suppress duplicates when live Gateway delivery overlaps with REST catch-up.
+const recentlySeen=new Set();
+const MAX_SEEN=10000;
+function reportMetadata(event,recovered=false){
+ if(!event||typeof event.message_id!=="string"||typeof event.channel_id!=="string"||event.guild_id!==guildId)return;
+ if(recentlySeen.has(event.message_id))return;
+ recentlySeen.add(event.message_id);
+ if(recentlySeen.size>MAX_SEEN)recentlySeen.delete(recentlySeen.values().next().value);
+ console.log(recovered?"Recovered metadata:":"Message metadata:",event.guild_id,event.channel_id,event.message_id);
+}
 async function loadCursor(){
  if(!cursorFile||cursor)return;
  try{
@@ -17,7 +27,7 @@ async function loadCursor(){
 async function saveCursor(next){
  if(!cursorFile)return;
  const tmp=cursorFile+"."+process.pid+".tmp";
- await writeFile(tmp,JSON.stringify({guild_id:guildId,after:next})+"\\n",{mode:0o600});
+ await writeFile(tmp,JSON.stringify({guild_id:guildId,after:next})+"\n",{mode:0o600});
  await rename(tmp,cursorFile);
 }
 if(!token||!/^[a-f0-9]{64}$/.test(token)||!guildId){
@@ -40,7 +50,7 @@ async function catchUp(){
    const data=await result.json();
    if(!Array.isArray(data.events)||data.events.length>100)throw Error("Malformed catch-up page");
    for(const event of data.events){
-    console.log("Recovered metadata:",event.guild_id,event.channel_id,event.message_id);
+    reportMetadata(event,true);
    }
    if(data.next_after && data.next_after!==cursor){
     await saveCursor(data.next_after);
@@ -75,7 +85,7 @@ function connect(){
    console.log("Subscribed to guild:",packet.d.guild_id);
    void catchUp();
   }else if(packet.t==="MESSAGE_METADATA_CREATE"){
-   console.log("Message metadata:",packet.d.guild_id,packet.d.channel_id,packet.d.message_id);
+   reportMetadata(packet.d);
   }
  });
  ws.addEventListener("close",event=>{
