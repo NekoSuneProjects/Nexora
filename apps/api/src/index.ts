@@ -570,6 +570,8 @@ app.get("/api/v10/guilds/:id/channels", async (request, reply) => {
   const id = (request.params as any).id;
   if (!user) return reply.code(401).send({ message:"Unauthorized" });
   if (!uuid.safeParse(id).success) return reply.code(400).send({ message:"Invalid guild ID" });
+  const allowed=await db.query("SELECT 1 FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,user.id]);
+  if(!allowed.rowCount)return reply.code(403).send({message:"Forbidden"});
   const r=await db.query("SELECT c.id,c.name,c.kind FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id WHERE gm.user_id=$1 AND c.guild_id=$2",[user.id,id]);
   return r.rows;
 });
