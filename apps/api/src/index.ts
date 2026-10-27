@@ -86,9 +86,24 @@ app.get("/api/v10/gateway", async (request) => {
   const publicHost = process.env.PUBLIC_BASE_URL ? new URL(process.env.PUBLIC_BASE_URL).host : host;
   return { url: `${scheme}://${publicHost}/gateway` };
 });
+// Best-effort per-IP registration quota; use a shared store for multi-instance deployments.
+const registrations=new Map<string,{count:number,expires:number}>();
+function reserveRegistration(ip:string,now=Date.now()){
+ const key=hashToken("register:"+ip);
+ let record=registrations.get(key);
+ if(!record||record.expires<=now){record={count:0,expires:now+60*60*1000};registrations.set(key,record)}
+ if(record.count>=5)return false;
+ record.count++;
+ if(registrations.size>5000){
+  for(const [k,v] of registrations){if(v.expires<=now)registrations.delete(k)}
+  if(registrations.size>5000)registrations.delete(registrations.keys().next().value!);
+ }
+ return true;
+}
 app.post("/api/v1/auth/register", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid username or password" });
+  if(!reserveRegistration(request.ip))return reply.code(429).header("Retry-After","3600").send({error:"Too many registrations; try again later"});
   const { username, password } = parsed.data;
   const salt = randomBytes(16).toString("hex");
   const hashed = await passwordHash(password, salt);

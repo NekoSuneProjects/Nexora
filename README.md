@@ -86,3 +86,6 @@ The user Gateway now enforces the same 8 KiB frame cap, 100 incoming messages pe
 
 ## Login abuse mitigation
 Six failed login attempts against the same username from the same Fastify client IP temporarily block further attempts for 15 minutes with HTTP 429 and Retry-After. Keys are SHA-256 hashed and the in-memory cache is bounded. This is **single-process, best-effort** protection, not a distributed rate limiter; an attacker can vary source IP/usernames, and shared proxies may affect the grouping. Configure trusted proxy handling carefully and add production-wide rate limits and account safeguards before public launch.
+
+## Registration quota
+The API now reserves up to five valid registration attempts per client IP per hour (429 / Retry-After: 3600 thereafter), before spending resources on password hashing. Failed insertions still consume a slot to limit username probing. This in-memory, per-process quota is preliminary and requires a distributed store and proxy/IP configuration before production deployment.

@@ -101,6 +101,8 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(oldIdentity.status,401);
   const newIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
   assert.equal(newIdentity.status,200);
+  for(let n=0;n<3;n++)assert.equal((await request("/api/v1/auth/register","POST",{username:"extra_"+suffix+"_"+n,password:"another long test password 123"})).status,201);
+  assert.equal((await request("/api/v1/auth/register","POST",{username:"over_"+suffix,password:"another long test password 123"})).status,429);
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
