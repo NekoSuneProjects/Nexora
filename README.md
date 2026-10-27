@@ -62,3 +62,6 @@ Authenticated users may create, list and revoke developer applications. Each app
 
 ## Initial community bot installations
 Community owners may install their own active developer apps via `POST /api/v1/guilds/:id/bots`, list installed apps, or uninstall them. The `can_read_events` permission is stored explicitly but **is not yet an implemented event delivery mechanism**. Bot credentials are not accepted by normal human endpoints and cannot read encrypted messages. Cross-owner OAuth installation, bot Gateway sessions, interactions and discord.js parity remain future work.
+
+## Bot-scoped community discovery
+`GET /api/v1/bots/@me/guilds` lists communities where a bot is installed. `GET /api/v1/bots/guilds/:id/channels` lists channel metadata only when its community installation has `can_read_events=true`. These endpoints use `Authorization: Bot <token>`; no message bodies or key material are returned. Live bot Gateway subscriptions and Discord.js compatibility remain unimplemented.

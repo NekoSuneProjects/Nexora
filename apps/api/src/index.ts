@@ -228,6 +228,31 @@ app.delete("/api/v1/guilds/:id/bots/:appId",async(request,reply)=>{
  return reply.code(204).send();
 });
 
+
+app.get("/api/v1/bots/@me/guilds",async(request,reply)=>{
+ const match=/^Bot ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
+ if(!match)return reply.code(401).send({message:"Invalid bot token"});
+ const result=await db.query(
+  "SELECT g.id,g.name,b.can_read_events FROM developer_apps a JOIN guild_bots b ON b.app_id=a.id JOIN guilds g ON g.id=b.guild_id WHERE a.bot_token_hash=$1 AND a.revoked_at IS NULL ORDER BY g.name",
+  [hashToken(match[1])]
+ );
+ return result.rows;
+});
+// Bot-facing event feed intentionally returns metadata only, never plaintext or encrypted message bodies.
+app.get("/api/v1/bots/guilds/:id/channels",async(request,reply)=>{
+ const match=/^Bot ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
+ if(!match)return reply.code(401).send({message:"Invalid bot token"});
+ const guildId=(request.params as {id:string}).id;
+ if(!uuid.safeParse(guildId).success)return reply.code(400).send({message:"Invalid community ID"});
+ const allowed=await db.query(
+  "SELECT 1 FROM developer_apps a JOIN guild_bots b ON b.app_id=a.id WHERE a.bot_token_hash=$1 AND a.revoked_at IS NULL AND b.guild_id=$2 AND b.can_read_events=true",
+  [hashToken(match[1]),guildId]
+ );
+ if(!allowed.rowCount)return reply.code(403).send({message:"Bot lacks event permission"});
+ const channels=await db.query("SELECT id,name,kind FROM channels WHERE guild_id=$1 ORDER BY created_at",[guildId]);
+ return channels.rows;
+});
+
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });
