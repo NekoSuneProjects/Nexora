@@ -118,7 +118,7 @@ async function takeQuota(key:string,limit:number,windowSeconds:number){
 app.post("/api/v1/auth/register", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid username or password" });
-  if(!await takeQuota("registration:"+request.ip,5,3600)return reply.code(429).header("Retry-After","3600").send({error:"Too many registrations; try again later"});
+  if(!await takeQuota("registration:"+request.ip,5,3600))return reply.code(429).header("Retry-After","3600").send({error:"Too many registrations; try again later"});
   const { username, password } = parsed.data;
   const salt = randomBytes(16).toString("hex");
   const hashed = await passwordHash(password, salt);
