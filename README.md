@@ -113,3 +113,6 @@ Bot token rotation and app revocation now close all authenticated bot WebSockets
 
 ## Immediate revocation integration assertion
 The PostgreSQL-backed bot Gateway test now checks that an active bot socket closes within 900 ms of token rotation, rather than merely relying on the 1-second test-only credential watchdog. This validates same-process revocation timing in CI, not instantaneous multi-instance invalidation.
+
+## Bot metadata catch-up polling
+Authorized installed bots can call `GET /api/v1/bots/guilds/:id/events?after=<message-uuid>` with `Authorization: Bot <token>` to retrieve up to 100 committed message metadata records (identifiers and creation times, **no ciphertext or plaintext**). Each response includes `next_after`; repeat until the page is smaller than 100. Invalid or other-community cursors are rejected. Initial no-cursor reads start with the oldest recorded messages, so catch up may take multiple pages. Permission is checked on every request. This is a first database-backed recovery path after reconnect; retention, durable delete events, cross-instance WebSocket fanout and replay guarantees remain unfinished.
