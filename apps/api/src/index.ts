@@ -37,6 +37,21 @@ async function member(userId: string, channelId: string) {
   return r.rowCount !== null && r.rowCount > 0;
 }
 const sockets = new Map<string, Set<any>>();
+const socketIdentity = new WeakMap<any,string>();
+const socketSubscriptions = new WeakMap<any,Set<string>>();
+function evictMemberSockets(userId:string,channelIds:string[]){
+ for(const id of channelIds){
+  const set=sockets.get(id);
+  if(!set)continue;
+  for(const socket of set){
+   if(socketIdentity.get(socket)!==userId)continue;
+   set.delete(socket);
+   socketSubscriptions.get(socket)?.delete(id);
+   if(socket.readyState===1)socket.send(JSON.stringify({op:0,t:"CHANNEL_ACCESS_REVOKED",s:null,d:{channel_id:id}}));
+  }
+  if(!set.size)sockets.delete(id);
+ }
+}
 function broadcast(channelId: string, payload: unknown) {
   for (const socket of sockets.get(channelId) ?? []) {
     if (socket.readyState === 1) socket.send(JSON.stringify(payload));
@@ -300,6 +315,8 @@ app.delete("/api/v1/guilds/:id/members/:userId",async(request,reply)=>{
  if(userId===guild.rows[0].owner_id)return reply.code(403).send({message:"Owner cannot be removed"});
  if(user.id!==userId && user.id!==guild.rows[0].owner_id)return reply.code(403).send({message:"Only owners can remove other members"});
  await db.query("DELETE FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,userId]);
+ const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[id]);
+ evictMemberSockets(userId,channels.rows.map((row:{id:string})=>row.id));
  return reply.code(204).send();
 });
 
@@ -338,6 +355,7 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
 app.get("/gateway", { websocket:true }, (socket) => {
   let identity: Identity | null = null;
   const subscriptions = new Set<string>();
+  socketSubscriptions.set(socket,subscriptions);
   let lastHeartbeat = Date.now();
   const heartbeatMs = 30000;
   const watchdog = setInterval(() => {
@@ -352,6 +370,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
       if (payload.op===2) {
         if(identity) { socket.close(4005,"Already authenticated");return; }
         identity=await auth("Bearer "+String(payload.d?.token ?? ""));
+        if(identity)socketIdentity.set(socket,identity.id);
         if (!identity) { socket.close(4004,"Authentication failed"); return; }
         socket.send(JSON.stringify({ op:0,t:"READY",s:null,d:{ user:identity } }));
       } else if (payload.op===42 && identity) {

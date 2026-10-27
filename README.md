@@ -50,3 +50,6 @@ The browser now connects to the native Gateway, authenticates, subscribes to the
 
 ## Membership limitations
 A community member list is accessible only to members; the owner may remove other users, and non-owner members may leave via the API. **Important:** the real-time gateway does not yet forcibly unsubscribe removed members, and client-side cryptographic key rotation is not yet implemented. Removing someone from a community is not yet a complete real-time or E2EE revocation guarantee.
+
+## Membership eviction (single API process)
+Removing a member now clears their existing channel subscriptions and notifies their connected clients with `CHANNEL_ACCESS_REVOKED`, preventing further broadcast delivery through those subscriptions. This is **not sufficient for multi-instance deployments**, where event fanout and membership invalidation require a shared bus such as Redis. Existing E2EE session keys, once implemented, must be rotated separately. This prototype remains single-instance and should not be exposed publicly.
