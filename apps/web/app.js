@@ -10,7 +10,7 @@ async function request(path, method="GET", body){
 async function signedIn(){
   const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;selfId=me.id;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
-  await loadGuilds();await loadProfile();
+  await loadGuilds();await loadProfile();await loadSessions();
 }
 async function loadGuilds(){
   const guilds=await request("/api/v10/users/@me/guilds");
@@ -104,3 +104,14 @@ $("create-channel").addEventListener("submit",e=>{e.preventDefault();run(async()
  const channel=await request("/api/v1/guilds/"+encodeURIComponent(currentGuild)+"/channels","POST",{name:$("channel-name").value});
  $("channel-name").value="";await openGuild(currentGuild);await openChannel(channel);status("Channel created.");
 })});
+
+async function loadSessions(){
+ const sessions=await request("/api/v1/auth/sessions");
+ $("session-count").textContent=sessions.length+" active session(s).";
+}
+$("logout-all").addEventListener("click",()=>run(async()=>{
+ await request("/api/v1/auth/logout-all","POST");
+ token=null;currentGuild=null;currentChannel=null;
+ $("logged-in").classList.add("hidden");$("logged-out").classList.remove("hidden");
+ status("All sessions revoked. Please sign in again.");
+}));

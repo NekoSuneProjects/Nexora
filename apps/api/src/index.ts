@@ -90,6 +90,20 @@ app.post("/api/v1/auth/logout", async (request, reply) => {
   await db.query("DELETE FROM sessions WHERE token_hash=$1", [hashToken(raw[1])]);
   return reply.code(204).send();
 });
+
+app.get("/api/v1/auth/sessions",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const rows=await db.query("SELECT left(token_hash,12) AS id,expires_at FROM sessions WHERE user_id=$1 AND expires_at>now() ORDER BY expires_at DESC",[user.id]);
+ return rows.rows;
+});
+app.post("/api/v1/auth/logout-all",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ await db.query("DELETE FROM sessions WHERE user_id=$1",[user.id]);
+ return reply.code(204).send();
+});
+
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });
