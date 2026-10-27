@@ -116,3 +116,6 @@ The PostgreSQL-backed bot Gateway test now checks that an active bot socket clos
 
 ## Bot metadata catch-up polling
 Authorized installed bots can call `GET /api/v1/bots/guilds/:id/events?after=<message-uuid>` with `Authorization: Bot <token>` to retrieve up to 100 committed message metadata records (identifiers and creation times, **no ciphertext or plaintext**). Each response includes `next_after`; repeat until the page is smaller than 100. Invalid or other-community cursors are rejected. Initial no-cursor reads start with the oldest recorded messages, so catch up may take multiple pages. Permission is checked on every request. This is a first database-backed recovery path after reconnect; retention, durable delete events, cross-instance WebSocket fanout and replay guarantees remain unfinished.
+
+## Event catch-up integration coverage
+PostgreSQL-backed CI now checks that an authorised bot can fetch stored message metadata, obtains an empty page after the latest message cursor, receives no ciphertext, rejects malformed cursors and loses polling access after uninstall.

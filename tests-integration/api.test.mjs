@@ -125,7 +125,20 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    const event=await bot.receive("MESSAGE_METADATA_CREATE");
    assert.deepEqual(event.d,{guild_id:id,channel_id:channelId,message_id:sent.data.id});
    assert.equal(Object.hasOwn(event.d,"ciphertext"),false);
+
+   const eventUrl="/api/v1/bots/guilds/"+id+"/events";
+   const history=await fetch(base+eventUrl,{headers:{authorization:"Bot "+botToken}});
+   assert.equal(history.status,200);
+   const historyBody=await history.json();
+   assert.ok(historyBody.events.some(item=>item.message_id===sent.data.id));
+   assert.ok(historyBody.events.every(item=>!Object.hasOwn(item,"ciphertext")));
+   const cursor=await fetch(base+eventUrl+"?after="+sent.data.id,{headers:{authorization:"Bot "+botToken}});
+   assert.equal(cursor.status,200);
+   assert.equal((await cursor.json()).events.length,0);
+   assert.equal((await fetch(base+eventUrl+"?after=not-a-uuid",{headers:{authorization:"Bot "+botToken}})).status,400);
+
    assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenA)).status,204);
+   assert.equal((await fetch(base+"/api/v1/bots/guilds/"+id+"/events",{headers:{authorization:"Bot "+botToken}})).status,403);
    const after=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only-2",algorithm:"client-encrypted-v1"},tokenA);
    assert.equal(after.status,201);
    // Permission is checked for every emission, so uninstalling prevents additional events.
