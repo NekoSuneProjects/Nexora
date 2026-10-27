@@ -77,3 +77,6 @@ The owner may call `POST /api/v1/developer/apps/:id/rotate-token` (authenticated
 
 ## Bot example reconnect policy
 The experimental metadata bot now reconnects with capped exponential backoff (1–30 seconds), re-authenticates and re-subscribes after disconnects, and stops cleanly on SIGINT/SIGTERM. It intentionally stops retrying on bot authentication rejection (code 4004/4005). **Missed events are not replayed**; reconnection is not an event-delivery guarantee. Avoid placing tokens in shell history or logs.
+
+## Experimental Gateway abuse controls
+The bot Gateway now closes a WebSocket exceeding 100 inbound messages per 10 seconds or 25 subscribed communities (code 4008). Payloads remain capped at 8 KiB and heartbeat timeouts continue to apply. These **per-connection** controls are not substitutes for IP/account admission limits, distributed quotas, or production anti-abuse controls.

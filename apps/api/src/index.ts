@@ -482,12 +482,16 @@ app.get("/bot-gateway",{websocket:true},socket=>{
  let appId:string|null=null;
  const subscriptions=new Set<string>();
  let lastHeartbeat=Date.now();
+ let windowStart=Date.now(),windowMessages=0;
  const interval=30000;
  const watchdog=setInterval(()=>{if(Date.now()-lastHeartbeat>interval*2.5)socket.close(4009,"Heartbeat timeout")},interval);
  socket.send(JSON.stringify({op:10,d:{heartbeat_interval:interval}}));
  socket.on("message",async(data:Buffer)=>{
   try{
    if(data.byteLength>8192){socket.close(4002,"Payload too large");return}
+   const now=Date.now();
+   if(now-windowStart>=10000){windowStart=now;windowMessages=0}
+   if(++windowMessages>100){socket.close(4008,"Gateway rate limit exceeded");return}
    const packet=JSON.parse(data.toString());
    if(packet.op===1){lastHeartbeat=Date.now();socket.send(JSON.stringify({op:11,d:null}));return}
    if(packet.op===2){
@@ -504,6 +508,7 @@ app.get("/bot-gateway",{websocket:true},socket=>{
     if(!uuid.safeParse(guildId).success)return;
     const allowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL",[guildId,appId]);
     if(!allowed.rowCount)return;
+    if(!subscriptions.has(guildId)&&subscriptions.size>=25){socket.close(4008,"Subscription limit exceeded");return}
     if(!botSockets.has(guildId))botSockets.set(guildId,new Set());
     botSockets.get(guildId)!.add(socket);subscriptions.add(guildId);
     socket.send(JSON.stringify({op:0,t:"GUILD_SUBSCRIBED",s:null,d:{guild_id:guildId}}));return
