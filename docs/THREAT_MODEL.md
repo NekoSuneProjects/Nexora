@@ -60,3 +60,6 @@
 Treat these as **blocking**: real E2EE before claiming encrypted private chat, shared abuse controls and multi-instance revocation, security header/origin review, endpoint authorization review, repeatable migrations and backup restoration, security regression tests, independent review. Until then, run only in trusted/private experimental environments.
 
 This document establishes a review baseline and exposes risks; it **does not certify** Nexora as secure.
+
+## Implemented increment: PostgreSQL authentication quotas
+Shared counter table `auth_rate_limits` uses an atomic upsert for registration and username/IP login attempt caps. This replaces per-process caches. The quota counts **all** valid-shaped login attempts (including success), so it is an intentionally conservative first implementation; future work needs distinct account/IP risk controls, reset policies, housekeeping and global KDF concurrency admission. Set trusted proxy configuration explicitly; do not blindly trust forwarded IP headers. Not a completed distributed abuse-defense review.

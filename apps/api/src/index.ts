@@ -105,24 +105,20 @@ app.get("/api/v10/gateway", async (request) => {
   const publicHost = process.env.PUBLIC_BASE_URL ? new URL(process.env.PUBLIC_BASE_URL).host : host;
   return { url: `${scheme}://${publicHost}/gateway` };
 });
-// Best-effort per-IP registration quota; use a shared store for multi-instance deployments.
-const registrations=new Map<string,{count:number,expires:number}>();
-function reserveRegistration(ip:string,now=Date.now()){
- const key=hashToken("register:"+ip);
- let record=registrations.get(key);
- if(!record||record.expires<=now){record={count:0,expires:now+60*60*1000};registrations.set(key,record)}
- if(record.count>=5)return false;
- record.count++;
- if(registrations.size>5000){
-  for(const [k,v] of registrations){if(v.expires<=now)registrations.delete(k)}
-  if(registrations.size>5000)registrations.delete(registrations.keys().next().value!);
- }
- return true;
+// PostgreSQL quota counters are shared by all API processes using the same database.
+// Atomic upserts prevent concurrent requests bypassing the quota.
+async function takeQuota(key:string,limit:number,windowSeconds:number){
+ const hashed=hashToken(key);
+ const result=await db.query(
+  "INSERT INTO auth_rate_limits(key_hash,count,expires_at) VALUES ($1,1,now()+($2::int*interval '1 second')) ON CONFLICT(key_hash) DO UPDATE SET count=CASE WHEN auth_rate_limits.expires_at<=now() THEN 1 ELSE auth_rate_limits.count+1 END,expires_at=CASE WHEN auth_rate_limits.expires_at<=now() THEN now()+($2::int*interval '1 second') ELSE auth_rate_limits.expires_at END RETURNING count",
+  [hashed,windowSeconds]
+ );
+ return Number(result.rows[0].count)<=limit;
 }
 app.post("/api/v1/auth/register", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid username or password" });
-  if(!reserveRegistration(request.ip))return reply.code(429).header("Retry-After","3600").send({error:"Too many registrations; try again later"});
+  if(!await takeQuota("registration:"+request.ip,5,3600)return reply.code(429).header("Retry-After","3600").send({error:"Too many registrations; try again later"});
   const { username, password } = parsed.data;
   const salt = randomBytes(16).toString("hex");
   const hashed = await passwordHash(password, salt);
@@ -135,38 +131,19 @@ app.post("/api/v1/auth/register", async (request, reply) => {
     throw e;
   }
 });
-// Single-process login abuse mitigation. Production deployments need shared IP/account quotas.
-const loginFailures = new Map<string,{count:number,expires:number}>();
-const LOGIN_WINDOW_MS = 15*60*1000;
-function failureKey(ip:string,username:string){return hashToken(ip+"\\0"+username.toLowerCase())}
-function loginLimited(key:string,now=Date.now()){
- const entry=loginFailures.get(key);
- if(entry && entry.expires<=now){loginFailures.delete(key);return false}
- return Boolean(entry && entry.count>=6);
-}
-function recordLoginFailure(key:string,now=Date.now()){
- const existing=loginFailures.get(key);
- if(!existing || existing.expires<=now)loginFailures.set(key,{count:1,expires:now+LOGIN_WINDOW_MS});
- else existing.count++;
- if(loginFailures.size>5000){
-  for(const [k,v] of loginFailures){if(v.expires<=now)loginFailures.delete(k)}
-  if(loginFailures.size>5000)loginFailures.delete(loginFailures.keys().next().value!);
- }
-}
-
 app.post("/api/v1/auth/login", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
-  const key=failureKey(request.ip,username);
-  if(loginLimited(key))return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
+  if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),6,900))
+   return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   const r = await db.query("SELECT id,password_hash,password_salt FROM users WHERE username=$1", [username]);
   const record = r.rows[0];
   // Avoid a fast unknown-user path and never leak which usernames exist.
   const hash = await passwordHash(password, record?.password_salt ?? "00000000000000000000000000000000");
   const a = Buffer.from(hash,"hex"), b = Buffer.from(record?.password_hash ?? "00".repeat(64),"hex");
-  if (!record || !timingSafeEqual(a,b)) {recordLoginFailure(key);return reply.code(401).send({ error: "Invalid credentials" });}
-  loginFailures.delete(key);
+  if (!record || !timingSafeEqual(a,b)) return reply.code(401).send({ error: "Invalid credentials" });
+
   const token = randomBytes(32).toString("hex");
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
   return { token, token_type: "Bearer", expires_in: 604800 };

@@ -92,3 +92,11 @@ CREATE TABLE IF NOT EXISTS guild_bots (
  installed_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(guild_id,app_id)
 );
+
+-- Shared, atomic authentication quotas. Schedule deletion of expired rows operationally.
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+ key_hash text PRIMARY KEY,
+ count integer NOT NULL CHECK (count >= 0),
+ expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS auth_rate_limits_expiry_idx ON auth_rate_limits(expires_at);
