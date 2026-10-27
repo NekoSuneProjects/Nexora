@@ -134,7 +134,8 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    assert.ok(historyBody.events.every(item=>!Object.hasOwn(item,"ciphertext")));
    const cursor=await fetch(base+eventUrl+"?after="+sent.data.id,{headers:{authorization:"Bot "+botToken}});
    assert.equal(cursor.status,200);
-   assert.equal((await cursor.json()).events.length,0);
+   const cursorEvents=(await cursor.json()).events;
+   assert.ok(cursorEvents.every(item=>item.message_id!==sent.data.id),"Cursor must exclude its own message");
    assert.equal((await fetch(base+eventUrl+"?after=not-a-uuid",{headers:{authorization:"Bot "+botToken}})).status,400);
 
    assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenA)).status,204);

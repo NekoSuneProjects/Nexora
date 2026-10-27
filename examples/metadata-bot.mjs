@@ -3,6 +3,8 @@
 const token=process.env.NEXORA_BOT_TOKEN;
 const guildId=process.env.NEXORA_GUILD_ID;
 const url=process.env.NEXORA_GATEWAY_URL||"ws://127.0.0.1:3000/bot-gateway";
+const apiBase=process.env.NEXORA_API_URL||new URL(url.replace(/^ws/,"http")).origin;
+let cursor=process.env.NEXORA_EVENT_CURSOR||null,catchingUp=false;
 if(!token||!/^[a-f0-9]{64}$/.test(token)||!guildId){
  console.error("Provide NEXORA_BOT_TOKEN (64 hex chars) and NEXORA_GUILD_ID");
  process.exit(1);
@@ -10,6 +12,27 @@ if(!token||!/^[a-f0-9]{64}$/.test(token)||!guildId){
 let socket=null,heartbeat=null,retryTimer=null,attempt=0,stopping=false;
 function cleanup(){
  if(heartbeat!==null){clearInterval(heartbeat);heartbeat=null}
+}
+async function catchUp(){
+ if(catchingUp||stopping)return;
+ catchingUp=true;
+ try{
+  for(let page=0;page<100&&!stopping;page++){
+   const endpoint=new URL("/api/v1/bots/guilds/"+encodeURIComponent(guildId)+"/events",apiBase);
+   if(cursor)endpoint.searchParams.set("after",cursor);
+   const result=await fetch(endpoint,{headers:{Authorization:"Bot "+token}});
+   if(!result.ok)throw Error("Catch-up HTTP "+result.status);
+   const data=await result.json();
+   if(!Array.isArray(data.events)||data.events.length>100)throw Error("Malformed catch-up page");
+   for(const event of data.events){
+    console.log("Recovered metadata:",event.guild_id,event.channel_id,event.message_id);
+   }
+   if(data.next_after)cursor=data.next_after;
+   if(data.events.length<100)break;
+   if(!data.next_after)throw Error("Missing cursor in full page");
+  }
+ }catch(error){console.error("Metadata catch-up failed:",error.message)}
+ finally{catchingUp=false}
 }
 function connect(){
  if(stopping)return;
@@ -32,6 +55,7 @@ function connect(){
    ws.send(JSON.stringify({op:42,d:{guild_id:guildId}}));
   }else if(packet.t==="GUILD_SUBSCRIBED"){
    console.log("Subscribed to guild:",packet.d.guild_id);
+   void catchUp();
   }else if(packet.t==="MESSAGE_METADATA_CREATE"){
    console.log("Message metadata:",packet.d.guild_id,packet.d.channel_id,packet.d.message_id);
   }
@@ -44,7 +68,7 @@ function connect(){
    console.error("Bot authentication rejected; refusing to retry until credentials are fixed.");
    return;
   }
-  // Reconnect and resubscribe; this experimental Gateway does not replay missed events.
+  // Reconnect, resubscribe and recover retained message metadata via REST.
   const delay=Math.min(30000,1000*2**Math.min(attempt++,5));
   console.error("Gateway closed",event.code,ready?"after READY":"before READY","; reconnecting in",delay,"ms");
   retryTimer=setTimeout(()=>{retryTimer=null;connect()},delay);
