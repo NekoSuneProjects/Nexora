@@ -157,6 +157,41 @@ app.delete("/api/v1/devices/:id",async(request,reply)=>{
  return reply.code(204).send();
 });
 
+
+const appInput=z.object({name:z.string().trim().min(2).max(80)});
+app.post("/api/v1/developer/apps",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const valid=appInput.safeParse(request.body);
+ if(!valid.success)return reply.code(400).send({message:"Invalid app name"});
+ const token=randomBytes(32).toString("hex"),id=randomUUID();
+ await db.query("INSERT INTO developer_apps(id,owner_id,name,bot_token_hash) VALUES($1,$2,$3,$4)",[id,user.id,valid.data.name,hashToken(token)]);
+ return reply.code(201).send({id,name:valid.data.name,bot_token:token,warning:"Save this token. It will not be displayed again."});
+});
+app.get("/api/v1/developer/apps",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const result=await db.query("SELECT id,name,created_at FROM developer_apps WHERE owner_id=$1 AND revoked_at IS NULL ORDER BY created_at",[user.id]);
+ return result.rows;
+});
+app.delete("/api/v1/developer/apps/:id",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;
+ if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid app ID"});
+ const result=await db.query("UPDATE developer_apps SET revoked_at=now() WHERE id=$1 AND owner_id=$2 AND revoked_at IS NULL RETURNING id",[id,user.id]);
+ if(!result.rowCount)return reply.code(404).send({message:"App not found"});
+ return reply.code(204).send();
+});
+// Separate early bot identity endpoint; bot credentials cannot authenticate as humans.
+app.get("/api/v1/bots/@me",async(request,reply)=>{
+ const match=/^Bot ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
+ if(!match)return reply.code(401).send({message:"Invalid bot token"});
+ const result=await db.query("SELECT id,name FROM developer_apps WHERE bot_token_hash=$1 AND revoked_at IS NULL",[hashToken(match[1])]);
+ if(!result.rowCount)return reply.code(401).send({message:"Invalid bot token"});
+ return {id:result.rows[0].id,username:result.rows[0].name,bot:true};
+});
+
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });

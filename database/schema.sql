@@ -73,3 +73,13 @@ CREATE TABLE IF NOT EXISTS user_devices (
  UNIQUE(user_id,identity_key)
 );
 CREATE INDEX IF NOT EXISTS user_devices_lookup ON user_devices(user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS developer_apps (
+ id uuid PRIMARY KEY,
+ owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ bot_token_hash text NOT NULL UNIQUE,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ revoked_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS developer_apps_owner_idx ON developer_apps(owner_id);

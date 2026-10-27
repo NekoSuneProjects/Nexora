@@ -56,3 +56,6 @@ Removing a member now clears their existing channel subscriptions and notifies t
 
 ## Request helper fix
 The browser and integration-test HTTP helpers now send JSON Content-Type only when sending a JSON body. Fastify rejects empty application/json requests; this previously broke empty-body actions such as join invite, sign out, and member removal.
+
+## Developer apps (initial)
+Authenticated users may create, list and revoke developer applications. Each app is issued a 256-bit bot credential once; only its SHA-256 hash is stored. Bot credentials authenticate to `GET /api/v1/bots/@me` using `Authorization: Bot <token>`, and cannot authenticate as human sessions. **Bots cannot yet be invited, receive Gateway events or execute discord.js commands.** Production token rotation, rate limits and granular scopes remain future work.
