@@ -110,3 +110,6 @@ Updated the bot rotation source check to match the current credential-hash assig
 
 ## Immediate local bot disconnects
 Bot token rotation and app revocation now close all authenticated bot WebSockets associated with that application in the current API process (4004). This supplements the 30-second PostgreSQL watchdog on other processes. In a multi-instance setup, remote sockets may remain connected until their next check; shared invalidation remains unimplemented.
+
+## Immediate revocation integration assertion
+The PostgreSQL-backed bot Gateway test now checks that an active bot socket closes within 900 ms of token rotation, rather than merely relying on the 1-second test-only credential watchdog. This validates same-process revocation timing in CI, not instantaneous multi-instance invalidation.

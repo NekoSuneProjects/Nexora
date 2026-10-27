@@ -147,9 +147,11 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   const connectedBot=await botSocket(rotated.data.bot_token,id);
   try{
    const revoked=closedSocket(connectedBot.ws,4004);
+   const startedAt=Date.now();
    const newerToken=await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenA);
    assert.equal(newerToken.status,200);
    await revoked;
+   assert.ok(Date.now()-startedAt<900,"Local bot connection should close without waiting for the 1-second credential watchdog");
    const oldBot=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
    assert.equal(oldBot.status,401);
   }finally{connectedBot.ws.close()}
