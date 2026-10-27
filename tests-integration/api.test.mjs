@@ -46,6 +46,42 @@ async function botSocket(token,guildId){
  return {ws,receive};
 }
 
+
+async function userSocket(token,channelId){
+ const ws=new WebSocket("ws://127.0.0.1:3100/gateway");
+ const queue=[],listeners=[];
+ ws.addEventListener("message",event=>{
+  const packet=JSON.parse(event.data);
+  if(listeners.length)listeners.shift()(packet);else queue.push(packet);
+ });
+ const receive=async(expected)=>{
+  for(let tries=0;tries<8;tries++){
+   const packet=queue.length?queue.shift():await Promise.race([
+    new Promise(resolve=>listeners.push(resolve)),
+    sleep(2500).then(()=>{throw Error("Timed out waiting for user Gateway "+expected)})
+   ]);
+   if(packet.op===expected||packet.t===expected)return packet;
+  }
+  throw Error("Missing user Gateway packet "+expected);
+ };
+ await receive(10);
+ ws.send(JSON.stringify({op:2,d:{token}}));
+ await receive("READY");
+ ws.send(JSON.stringify({op:42,d:{channel_id:channelId}}));
+ await receive("CHANNEL_SUBSCRIBED");
+ return ws;
+}
+function closedSocket(ws,expectedCode){
+ return new Promise((resolve,reject)=>{
+  if(ws.readyState===WebSocket.CLOSED)return reject(Error("Socket closed before close listener attached"));
+  const timer=setTimeout(()=>reject(Error("Timed out waiting for WebSocket revocation")),3000);
+  ws.addEventListener("close",event=>{
+   clearTimeout(timer);
+   try{assert.equal(event.code,expectedCode);resolve()}catch(e){reject(e)}
+  },{once:true});
+ });
+}
+
 test("API uses a real PostgreSQL database and enforces community membership",async()=>{
  try{
   await ready();
@@ -103,6 +139,24 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal(newIdentity.status,200);
   for(let n=0;n<3;n++)assert.equal((await request("/api/v1/auth/register","POST",{username:"extra_"+suffix+"_"+n,password:"another long test password 123"})).status,201);
   assert.equal((await request("/api/v1/auth/register","POST",{username:"over_"+suffix,password:"another long test password 123"})).status,429);
+
+  const secondSession=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(secondSession.status,200);
+  // User b was removed from the community earlier; restore membership with a fresh invite.
+  const inviteAgain=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
+  assert.equal(inviteAgain.status,201);
+  assert.equal((await request("/api/v1/invites/"+inviteAgain.data.code+"/join","POST",undefined,tokenB)).status,200);
+  const wsOld=await userSocket(tokenB,channelId);
+  const wsNew=await userSocket(secondSession.data.token,channelId);
+  try{
+   const oldClosed=closedSocket(wsOld,4004);
+   assert.equal((await request("/api/v1/auth/logout","POST",undefined,tokenB)).status,204);
+   await oldClosed;
+   assert.equal(wsNew.readyState,WebSocket.OPEN);
+   const newClosed=closedSocket(wsNew,4004);
+   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,secondSession.data.token)).status,204);
+   await newClosed;
+  }finally{wsOld.close();wsNew.close()}
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
