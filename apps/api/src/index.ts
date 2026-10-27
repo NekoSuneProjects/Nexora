@@ -351,15 +351,14 @@ app.get("/api/v1/bots/guilds/:id/events",async(request,reply)=>{
  if(!uuid.safeParse(guildId).success||!query.success)return reply.code(400).send({message:"Invalid community or cursor"});
  const allowed=await db.query("SELECT 1 FROM developer_apps a JOIN guild_bots b ON b.app_id=a.id WHERE a.bot_token_hash=$1 AND a.revoked_at IS NULL AND b.guild_id=$2 AND b.can_read_events=true",[hashToken(match[1]),guildId]);
  if(!allowed.rowCount)return reply.code(403).send({message:"Bot lacks event permission"});
- let afterCreated:null|string=null,afterId:null|string=null;
  if(query.data.after){
-  const cursor=await db.query("SELECT m.created_at,m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE m.id=$1 AND c.guild_id=$2",[query.data.after,guildId]);
+  const cursor=await db.query("SELECT 1 FROM messages m JOIN channels c ON c.id=m.channel_id WHERE m.id=$1 AND c.guild_id=$2",[query.data.after,guildId]);
   if(!cursor.rowCount)return reply.code(400).send({message:"Cursor does not belong to this community"});
-  afterCreated=cursor.rows[0].created_at;afterId=cursor.rows[0].id;
  }
+ // Compare timestamps in PostgreSQL; Node Date loses microseconds and can replay the cursor row.
  const result=await db.query(
-  "SELECT m.id AS message_id,m.channel_id,c.guild_id,m.created_at FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.guild_id=$1 AND ($2::timestamptz IS NULL OR (m.created_at,m.id)>($2::timestamptz,$3::uuid)) ORDER BY m.created_at ASC,m.id ASC LIMIT 100",
-  [guildId,afterCreated,afterId]
+  "SELECT m.id AS message_id,m.channel_id,c.guild_id,m.created_at FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.guild_id=$1 AND ($2::uuid IS NULL OR (m.created_at,m.id)>(SELECT previous.created_at,previous.id FROM messages previous WHERE previous.id=$2::uuid)) ORDER BY m.created_at ASC,m.id ASC LIMIT 100",
+  [guildId,query.data.after??null]
  );
  return {events:result.rows,next_after:result.rows.at(-1)?.message_id??query.data.after??null};
 });

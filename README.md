@@ -122,3 +122,6 @@ PostgreSQL-backed CI now checks that an authorised bot can fetch stored message 
 
 ## Example bot event catch-up
 The runnable metadata bot now polls the REST event-history endpoint after a successful subscription, using an optional `NEXORA_API_URL` and starting cursor `NEXORA_EVENT_CURSOR`. It fetches bounded pages of up to 100 entries and logs recovered message identifiers. The cursor is **in-memory only**; persist it in your own storage for production-like recovery. This does not guarantee exactly-once processing or replay non-message events.
+
+## Cursor precision fix
+Bot catch-up now compares cursor timestamps directly inside PostgreSQL so microsecond precision is retained; serializing the timestamp through JavaScript previously allowed the cursor message to reappear in subsequent pages.
