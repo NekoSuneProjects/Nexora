@@ -47,3 +47,6 @@ Authenticated users can register a 32-byte base64url-encoded public identity key
 
 ## Experimental real-time client
 The browser now connects to the native Gateway, authenticates, subscribes to the selected channel, and refreshes opaque message envelopes on `MESSAGE_CREATE`. Heartbeats, a basic timeout, and unsubscribe handling are implemented. This is **not** a Discord.js-compatible Gateway, and it is not a message-decryption implementation. Real-time subscriptions currently rely on membership at subscribe time; membership revocation push enforcement and multi-instance fanout still need implementation.
+
+## Membership limitations
+A community member list is accessible only to members; the owner may remove other users, and non-owner members may leave via the API. **Important:** the real-time gateway does not yet forcibly unsubscribe removed members, and client-side cryptographic key rotation is not yet implemented. Removing someone from a community is not yet a complete real-time or E2EE revocation guarantee.

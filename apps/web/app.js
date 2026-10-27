@@ -27,7 +27,7 @@ async function loadGuilds(){
 }
 async function openGuild(id){
   currentGuild=id;currentChannel=null;$("messages").replaceChildren();$("channel-title").textContent="Select a channel";
-  await loadGuilds();
+  await loadGuilds();await loadMembers();
   const channels=await request("/api/v10/guilds/"+encodeURIComponent(id)+"/channels");
   $("channels").replaceChildren();
   for(const channel of channels){
@@ -146,3 +146,22 @@ async function connectGateway(){
 }
 $("logout").addEventListener("click",disconnectGateway);
 $("logout-all").addEventListener("click",disconnectGateway);
+
+async function loadMembers(){
+ if(!currentGuild)return;
+ const members=await request("/api/v1/guilds/"+encodeURIComponent(currentGuild)+"/members");
+ $("members").replaceChildren();
+ for(const person of members){
+   const row=document.createElement("p");row.append(node("span",person.username+" "));
+   if(currentGuildOwner && person.id!==selfId){
+     const remove=node("button","Remove");remove.type="button";
+     remove.onclick=()=>run(async()=>{
+       if(!confirm("Remove "+person.username+" from this community?"))return;
+       await request("/api/v1/guilds/"+encodeURIComponent(currentGuild)+"/members/"+encodeURIComponent(person.id),"DELETE");
+       await loadMembers();status("Member removed.");
+     });
+     row.append(remove);
+   }
+   $("members").append(row);
+ }
+}
