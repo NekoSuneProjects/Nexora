@@ -74,3 +74,6 @@ After creating a developer application and installing it in your community with 
 
 ## Bot credential rotation
 The owner may call `POST /api/v1/developer/apps/:id/rotate-token` (authenticated human Bearer session) to atomically replace an active application's bot token. Only the new token is returned, once; the previous credential fails REST authentication and is rejected for future bot event delivery, including on already-established WebSockets. Keep credentials secret, use TLS/WSS outside localhost, and remember that this is still a prototype.
+
+## Bot example reconnect policy
+The experimental metadata bot now reconnects with capped exponential backoff (1–30 seconds), re-authenticates and re-subscribes after disconnects, and stops cleanly on SIGINT/SIGTERM. It intentionally stops retrying on bot authentication rejection (code 4004/4005). **Missed events are not replayed**; reconnection is not an event-delivery guarantee. Avoid placing tokens in shell history or logs.
