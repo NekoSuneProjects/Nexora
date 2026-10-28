@@ -159,6 +159,11 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    const sentAcross=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-across-instances",algorithm:"client-encrypted-v1"},tokenA);
    assert.equal(sentAcross.status,201);
    assert.equal((await waitPacket("MESSAGE_CREATE")).d.id,sentAcross.data.id);
+   assert.equal((await request("/api/v10/channels/"+channelId+"/messages/"+sentAcross.data.id,"DELETE",undefined,tokenA)).status,204);
+   const crossDelete=await waitPacket("MESSAGE_DELETE");
+   assert.equal(crossDelete.d.id,sentAcross.data.id);
+   assert.equal(crossDelete.d.channel_id,channelId);
+   assert.equal(Object.hasOwn(crossDelete.d,"ciphertext"),false);
    const removeId=(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id;
    assert.equal((await request("/api/v1/guilds/"+id+"/members/"+removeId,"DELETE",undefined,tokenA)).status,204);
    await waitPacket("CHANNEL_ACCESS_REVOKED");
@@ -274,6 +279,20 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    await pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1",[tokenHash]);
    await closed;
   }finally{expiringSocket.close();await pool.end()}
+  // Direct SQL session deletion simulates a separate instance; DB trigger should close
+  // an authenticated Gateway without waiting for its periodic watchdog.
+  const directSession=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(directSession.status,200);
+  const directSocket=await userSocket(directSession.data.token,channelId);
+  const directPool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+  try{
+   const closed=closedSocket(directSocket,4004);
+   const hashed=createHash("sha256").update(directSession.data.token).digest("hex");
+   const start=Date.now();
+   await directPool.query("DELETE FROM sessions WHERE token_hash=$1",[hashed]);
+   await closed;
+   assert.ok(Date.now()-start<1000,"Database-triggered session invalidation should precede 1-second watchdog");
+  }finally{directSocket.close();await directPool.end()}
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
