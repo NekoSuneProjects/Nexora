@@ -602,8 +602,13 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   const parsed=encryptedEnvelope.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ message:"Only opaque ciphertext envelopes are accepted" });
   const messageId=randomUUID();
-  const r=await db.query("INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) VALUES ($1,$2,$3,$4,$5) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
-    [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]);
+  // INSERT ... SELECT performs the membership check within the write statement,
+  // avoiding the separate authorization-query/INSERT race on this route.
+  const r=await db.query(
+    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
+    [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]
+  );
+  if(!r.rowCount)return reply.code(403).send({message:"Forbidden"});
   await publishSecurityEvent({kind:"message",channel:id,message:r.rows[0].id});
   return reply.code(201).send(r.rows[0]);
 });

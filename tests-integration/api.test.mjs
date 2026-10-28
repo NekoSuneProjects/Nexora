@@ -168,6 +168,9 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   // Membership was revoked on the other API instance above.
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
 
+  // Ensure a former member is denied message insertion by the guarded SQL write.
+  assert.equal((await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"former-member",algorithm:"client-encrypted-v1"},tokenB)).status,403);
+
   // Message lifecycle: only a current member who authored the record can delete it.
   const deleteCandidate=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"deletion-test-envelope",algorithm:"client-encrypted-v1"},tokenA);
   assert.equal(deleteCandidate.status,201);
