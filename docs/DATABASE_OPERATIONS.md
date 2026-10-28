@@ -37,3 +37,6 @@ Versioned migration ledger/locking, upgrade-from-old-schema CI, real isolated re
 The API now exposes `DELETE /api/v10/channels/:id/messages/:messageId`. A parameterized atomic `DELETE` requires matching author, message/channel relationship and current community membership; other users, other channels and already deleted messages return 404. On success, a PostgreSQL notification emits `MESSAGE_DELETE` with IDs only to currently authorized connected user Gateway sessions (no ciphertext). The database integration suite covers author-only deletion and idempotent failure.
 
 **Limitations:** This is physical deletion from the live `messages` table, not guaranteed erasure from existing backups, cached clients or previously copied ciphertext. A durable deletion log/tombstone, replay for offline clients, moderation deletion privileges, retention-policy sign-off and multi-instance deletion tests are still required.
+
+## CI restore evidence
+CI now takes a PostgreSQL custom-format dump after integration tests and restores it into an independent `nexora_restore_ci` database. The workflow verifies the restored user table and messages table existence. This is an isolated, disposable CI drill; it does not replace encrypted off-site backup management, production-sized restore rehearsal, RPO/RTO measurement or incident response testing.

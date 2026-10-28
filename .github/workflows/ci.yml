@@ -46,3 +46,14 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
+      - name: Verify an isolated PostgreSQL backup restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-acl --file="$RUNNER_TEMP/nexora-ci.dump"
+          pg_restore --list "$RUNNER_TEMP/nexora-ci.dump" >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nexora_restore_ci'
+          RESTORE_URL="${DATABASE_URL%/*}/nexora_restore_ci"
+          pg_restore --dbname="$RESTORE_URL" --no-owner --no-acl --exit-on-error "$RUNNER_TEMP/nexora-ci.dump"
+          psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS restored_users FROM users"
+          psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT to_regclass('public.messages') IS NOT NULL" | grep -qx t
