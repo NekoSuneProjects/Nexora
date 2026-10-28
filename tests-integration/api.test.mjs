@@ -301,7 +301,13 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   function decodeBase32(input){const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";let bits=0,n=0,out=[];for(const char of input){n=(n<<5)|alphabet.indexOf(char);bits+=5;if(bits>=8){bits-=8;out.push((n>>>bits)&255)}}return Buffer.from(out)}
   function currentCode(secret){const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));const h=createHmac("sha1",decodeBase32(secret)).update(counter).digest();const offset=h[19]&15;return String((h.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,"0")}
   const code=currentCode(enrollment.data.secret);
-  assert.equal((await request("/api/v1/auth/mfa/confirm","POST",{code},mfaLogin.data.token)).status,200);
+  const confirmed=await request("/api/v1/auth/mfa/confirm","POST",{code},mfaLogin.data.token);
+  assert.equal(confirmed.status,200);
+  assert.equal(confirmed.data.recovery_codes.length,8);
+  const recovery=confirmed.data.recovery_codes[0];
+  const recoveryLogin=await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",recovery_code:recovery});
+  assert.equal(recoveryLogin.status,200);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",recovery_code:recovery})).status,401);
   assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123"})).status,401);
   // Confirmation consumes the current time-step: a code cannot be replayed at login.
   assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",mfa_code:code})).status,401);
