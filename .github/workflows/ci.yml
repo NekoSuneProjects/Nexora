@@ -44,6 +44,10 @@ jobs:
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
+      - name: Apply authenticator MFA migration twice
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
       - name: Verify an isolated PostgreSQL backup restore
