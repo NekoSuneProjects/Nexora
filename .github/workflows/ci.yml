@@ -40,5 +40,9 @@ jobs:
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
+      - name: Install transaction-scoped security invalidation triggers
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
