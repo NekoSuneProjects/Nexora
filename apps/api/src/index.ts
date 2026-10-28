@@ -47,8 +47,15 @@ const encryptedEnvelope = z.object({
 });
 const uuid = z.string().uuid();
 type Identity = { id: string; username: string };
+// A bounded process-local KDF admission gate prevents unbounded scrypt jobs.
+// The shared database quotas below apply across instances as well.
+const MAX_ACTIVE_KDF=Number(process.env.MAX_ACTIVE_KDF||4);
+let activeKdf=0;
 async function passwordHash(password: string, salt: string) {
-  return (await scrypt(password, salt, 64) as Buffer).toString("hex");
+  if(activeKdf>=MAX_ACTIVE_KDF)throw Object.assign(new Error("Authentication temporarily busy"),{statusCode:503});
+  activeKdf++;
+  try{return (await scrypt(password, salt, 64) as Buffer).toString("hex")}
+  finally{activeKdf--}
 }
 async function auth(header?: string): Promise<Identity | null> {
   const match = /^Bearer ([a-f0-9]{64})$/.exec(header ?? "");
@@ -202,6 +209,9 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const parsed = credentials.safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
+  // An IP-wide budget prevents switching usernames to evade pairwise throttles.
+  if(!await takeQuota("login-ip:"+request.ip,60,900))
+   return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),7,900))
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   const r = await db.query("SELECT id,password_hash,password_salt FROM users WHERE username=$1", [username]);

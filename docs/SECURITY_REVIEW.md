@@ -50,3 +50,6 @@ Added PostgreSQL integration cases denying cross-community channel reads, messag
 
 ## Incremental browser verification and reviewer readiness
 CI now exercises real HTTP cross-origin rejection, same-origin access and headers; the second-instance membership test was corrected to issue an actual removal before waiting for notification. See `docs/SECURITY_VALIDATION.md` for deployment checks, MFA/account-recovery acceptance criteria and independent review handoff. This does **not** implement MFA or replace external review.
+
+## Additional abuse hardening
+A shared PostgreSQL IP-wide login budget (60 attempts / 15 minutes) now supplements the per username/IP budget. A per-process bounded scrypt admission gate defaults to four concurrent KDF jobs; excess requests return 503 instead of growing unbounded KDF work. These are **starter limits**, not tuned deployment guarantees: tune `MAX_ACTIVE_KDF`, validate proxy IP handling, add cross-instance load tests, and schedule expired quota cleanup. The shared database may become a denial-of-service dependency and needs monitoring.
