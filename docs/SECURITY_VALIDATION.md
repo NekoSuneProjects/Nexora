@@ -21,3 +21,6 @@
 - Review `docs/THREAT_MODEL.md`, `docs/SECURITY_REVIEW.md` and all auth/WebSocket/membership SQL paths against a route matrix.
 - Reviewer must be independent of implementation, record reproducible findings with severity, proof-of-concept and remediation evidence, and verify fixes.
 - Open issues for critical/high findings. Do not mark any independent-review or overall P0 security item complete before signed approval.
+
+## Trusted proxy configuration and account-level quotas
+By default Fastify does **not** trust `X-Forwarded-For`. If deployed behind a controlled reverse proxy, set `TRUSTED_PROXY_CIDRS` to a comma-separated list of only the proxy's trusted addresses/CIDRs (for example `127.0.0.1/8` for a loopback-only proxy), and configure the proxy to overwrite client-supplied forwarded headers. Validate the actual client IP in integration tests for your topology; never set an unrestricted trust-all proxy mode. Login budgets are now enforced at the IP (60/15m), normalized username (40/15m), and pair (7/15m) scopes in shared PostgreSQL counters. These limits are initial safeguards and may block shared-network users; monitoring, tuning and recovery testing remain needed.

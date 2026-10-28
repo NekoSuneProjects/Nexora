@@ -10,7 +10,9 @@ import { fileURLToPath } from "node:url";
 const scrypt = promisify(scryptCallback);
 const app = Fastify({
  logger:{redact:["req.headers.authorization","req.headers.cookie","req.body.password","req.body.token","res.headers.set-cookie"]},
- bodyLimit:1024*1024
+ bodyLimit:1024*1024,
+ // Only named proxy networks can supply X-Forwarded-For. Direct deployments trust none.
+ trustProxy:process.env.TRUSTED_PROXY_CIDRS ? process.env.TRUSTED_PROXY_CIDRS.split(",").map(s=>s.trim()).filter(Boolean) : false
 });
 // Same-origin frontend: reject browser cross-site mutations and WebSocket handshakes.
 // Non-browser CLI calls without Origin are allowed; enforce TLS and credential controls at the proxy.
@@ -219,6 +221,9 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const { username, password } = parsed.data;
   // An IP-wide budget prevents switching usernames to evade pairwise throttles.
   if(!await takeQuota("login-ip:"+request.ip,60,900))
+   return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
+  // Account-wide quota prevents distributing guesses for one username across IPs.
+  if(!await takeQuota("login-account:"+username.toLowerCase(),40,900))
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),7,900))
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
