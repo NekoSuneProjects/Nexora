@@ -222,6 +222,15 @@ app.post("/api/v1/auth/mfa/enroll",async(request,reply)=>{
  if(!mfaEncryptionKey)return reply.code(503).send({message:"MFA not configured"});
  const existing=await db.query("SELECT enabled FROM user_mfa WHERE user_id=$1",[user.id]);
  if(existing.rows[0]?.enabled)return reply.code(409).send({message:"Already enrolled"});
+ // Enrolling a second factor requires fresh password proof, not merely a stolen bearer token.
+ const input=z.object({password:z.string().min(12).max(256)}).safeParse(request.body);
+ if(!input.success)return reply.code(400).send({message:"Password required for MFA enrollment"});
+ if(!await takeQuota("mfa-enroll-proof:"+user.id,6,900))return reply.code(429).send({message:"Too many enrollment attempts"});
+ const owner=await db.query("SELECT password_hash,password_salt FROM users WHERE id=$1",[user.id]);
+ if(!owner.rowCount)return reply.code(401).send({message:"Unauthorized"});
+ const expected=Buffer.from(owner.rows[0].password_hash,"hex");
+ const proof=Buffer.from(await passwordHash(input.data.password,owner.rows[0].password_salt),"hex");
+ if(expected.length!==proof.length||!timingSafeEqual(expected,proof))return reply.code(401).send({message:"Invalid password"});
  const secret=newSecret();
  await db.query("INSERT INTO user_mfa(user_id,secret_enc) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET secret_enc=EXCLUDED.secret_enc,enabled=false,last_step=-1",[user.id,encryptSecret(secret.raw,mfaEncryptionKey)]);
  return {secret:secret.base32,period:30,digits:6,algorithm:"SHA1"};
@@ -270,9 +279,11 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const mfa=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=true",[record.id]);
   if(mfa.rowCount){
    if(!mfaEncryptionKey)return reply.code(503).send({error:"MFA unavailable"});
+   let recovered=false;
    if(parsed.data.recovery_code){
     const used=await db.query("DELETE FROM mfa_recovery_codes WHERE user_id=$1 AND code_hash=$2 RETURNING user_id",[record.id,hashToken(parsed.data.recovery_code)]);
     if(!used.rowCount)return reply.code(401).send({error:"Invalid recovery code"});
+    recovered=true;
    }else{
     const step=verifyTotp(decryptSecret(mfa.rows[0].secret_enc,mfaEncryptionKey),parsed.data.mfa_code??"");
     if(step===null)return reply.code(401).send({error:"MFA code required or invalid"});
@@ -281,6 +292,12 @@ app.post("/api/v1/auth/login", async (request, reply) => {
    }
   }
   const token = randomBytes(32).toString("hex");
+  // Recovery is a high-risk action: invalidate other sessions before issuing a new token.
+  // Triggers notify every connected API instance after commit.
+  if(mfa.rowCount && typeof recovered!=="undefined" && recovered){
+   await db.query("DELETE FROM sessions WHERE user_id=$1",[record.id]);
+   closeUserConnections(record.id);
+  }
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
   return { token, token_type: "Bearer", expires_in: 604800 };
 });
