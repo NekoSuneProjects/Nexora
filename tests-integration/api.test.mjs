@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import pg from "pg";
 
 const base="http://127.0.0.1:3100";
-const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1",NODE_ENV:"test"},stdio:"pipe"});
+const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1",NODE_ENV:"test",MFA_ENCRYPTION_KEY:"11".repeat(32)},stdio:"pipe"});
 let log="";
 processHandle.stdout.on("data",d=>{log+=d.toString()});
 processHandle.stderr.on("data",d=>{log+=d.toString()});
@@ -293,6 +293,18 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    await closed;
    assert.ok(Date.now()-start<1000,"Database-triggered session invalidation should precede 1-second watchdog");
   }finally{directSocket.close();await directPool.end()}
+  // Authenticator integration: enrollment, confirmation, enforced login and replay rejection.
+  const mfaLogin=await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123"});
+  assert.equal(mfaLogin.status,200);
+  const enrollment=await request("/api/v1/auth/mfa/enroll","POST",undefined,mfaLogin.data.token);
+  assert.equal(enrollment.status,200);
+  function decodeBase32(input){const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";let bits=0,n=0,out=[];for(const char of input){n=(n<<5)|alphabet.indexOf(char);bits+=5;if(bits>=8){bits-=8;out.push((n>>>bits)&255)}}return Buffer.from(out)}
+  function currentCode(secret){const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));const h=createHmac("sha1",decodeBase32(secret)).update(counter).digest();const offset=h[19]&15;return String((h.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,"0")}
+  const code=currentCode(enrollment.data.secret);
+  assert.equal((await request("/api/v1/auth/mfa/confirm","POST",{code},mfaLogin.data.token)).status,200);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123"})).status,401);
+  // Confirmation consumes the current time-step: a code cannot be replayed at login.
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",mfa_code:code})).status,401);
   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
   assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
  }finally{
