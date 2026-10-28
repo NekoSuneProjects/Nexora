@@ -87,6 +87,14 @@ function closedSocket(ws,expectedCode){
 test("API uses a real PostgreSQL database and enforces community membership",async()=>{
  try{
   await ready();
+  // Exercise actual HTTP Origin policy and security response headers.
+  const crossOrigin=await fetch(base+"/api/v10/users/@me",{headers:{Origin:"https://untrusted.example"}});
+  assert.equal(crossOrigin.status,403);
+  const sameOrigin=await fetch(base+"/health",{headers:{Origin:base}});
+  assert.equal(sameOrigin.status,200);
+  assert.equal(sameOrigin.headers.get("x-content-type-options"),"nosniff");
+  assert.equal(sameOrigin.headers.get("x-frame-options"),"DENY");
+  assert.match(sameOrigin.headers.get("content-security-policy")??"",/frame-ancestors 'none'/);
   const suffix=Math.random().toString(36).slice(2,10);
   const a="alpha_"+suffix,b="bravo_"+suffix;
   assert.equal((await request("/api/v1/auth/register","POST",{username:a,password:"a secure test passphrase 123"})).status,201);
@@ -150,7 +158,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    assert.equal(sentAcross.status,201);
    assert.equal((await waitPacket("MESSAGE_CREATE")).d.id,sentAcross.data.id);
    const removeId=(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id;
-  // Member B was removed by the cross-instance revocation test.
+   assert.equal((await request("/api/v1/guilds/"+id+"/members/"+removeId,"DELETE",undefined,tokenA)).status,204);
    await waitPacket("CHANNEL_ACCESS_REVOKED");
   }finally{
    remote?.close();replica.kill("SIGTERM");

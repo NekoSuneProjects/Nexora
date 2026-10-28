@@ -47,3 +47,6 @@ Each API instance now listens to `nexora_security` and receives user-session, bo
 
 ## Negative-path authorization coverage (2026-10-27)
 Added PostgreSQL integration cases denying cross-community channel reads, message reads/writes, invite creation, member listings/removal, channel creation and rename. Existing tests also cover bot grant revocation and session invalidation. Fixed cross-instance membership test to execute the removal before awaiting revocation. **Remaining review:** enumerate every route in an access-control matrix, test races under contention (membership change between auth and write), multi-instance bot token events and all WebSocket subscribe/unsubscribe edge cases. This is not a completed audit.
+
+## Incremental browser verification and reviewer readiness
+CI now exercises real HTTP cross-origin rejection, same-origin access and headers; the second-instance membership test was corrected to issue an actual removal before waiting for notification. See `docs/SECURITY_VALIDATION.md` for deployment checks, MFA/account-recovery acceptance criteria and independent review handoff. This does **not** implement MFA or replace external review.
