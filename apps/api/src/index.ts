@@ -236,11 +236,20 @@ app.post("/api/v1/auth/mfa/confirm",async(request,reply)=>{
  if(!row.rowCount)return reply.code(409).send({message:"Enrollment not pending"});
  const step=verifyTotp(decryptSecret(row.rows[0].secret_enc,mfaEncryptionKey),code.data.code);
  if(step===null)return reply.code(401).send({message:"Invalid code"});
- await db.query("UPDATE user_mfa SET enabled=true,last_step=$2 WHERE user_id=$1 AND enabled=false",[user.id,step]);
- return {enabled:true};
+ const client=await db.connect();
+ try{
+  await client.query("BEGIN");
+  const enabled=await client.query("UPDATE user_mfa SET enabled=true,last_step=$2 WHERE user_id=$1 AND enabled=false RETURNING user_id",[user.id,step]);
+  if(!enabled.rowCount){await client.query("ROLLBACK");return reply.code(409).send({message:"Already enrolled"})}
+  const codes=Array.from({length:8},()=>randomBytes(16).toString("hex"));
+  for(const code of codes)await client.query("INSERT INTO mfa_recovery_codes(user_id,code_hash) VALUES($1,$2)",[user.id,hashToken(code)]);
+  await client.query("COMMIT");
+  return {enabled:true,recovery_codes:codes,warning:"Store recovery codes offline. Each can be used only once."};
+ }catch(error){await client.query("ROLLBACK");throw error}
+ finally{client.release()}
 });
 app.post("/api/v1/auth/login", async (request, reply) => {
-  const parsed = credentials.extend({mfa_code:z.string().regex(/^[0-9]{6}$/).optional()}).safeParse(request.body);
+  const parsed = credentials.extend({mfa_code:z.string().regex(/^[0-9]{6}$/).optional(),recovery_code:z.string().regex(/^[a-f0-9]{32}$/).optional()}).safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
   // An IP-wide budget prevents switching usernames to evade pairwise throttles.
@@ -261,10 +270,15 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const mfa=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=true",[record.id]);
   if(mfa.rowCount){
    if(!mfaEncryptionKey)return reply.code(503).send({error:"MFA unavailable"});
-   const step=verifyTotp(decryptSecret(mfa.rows[0].secret_enc,mfaEncryptionKey),parsed.data.mfa_code??"");
-   if(step===null)return reply.code(401).send({error:"MFA code required or invalid"});
-   const consumed=await db.query("UPDATE user_mfa SET last_step=$2 WHERE user_id=$1 AND last_step<$2 RETURNING user_id",[record.id,step]);
-   if(!consumed.rowCount)return reply.code(401).send({error:"MFA code already used"});
+   if(parsed.data.recovery_code){
+    const used=await db.query("DELETE FROM mfa_recovery_codes WHERE user_id=$1 AND code_hash=$2 RETURNING user_id",[record.id,hashToken(parsed.data.recovery_code)]);
+    if(!used.rowCount)return reply.code(401).send({error:"Invalid recovery code"});
+   }else{
+    const step=verifyTotp(decryptSecret(mfa.rows[0].secret_enc,mfaEncryptionKey),parsed.data.mfa_code??"");
+    if(step===null)return reply.code(401).send({error:"MFA code required or invalid"});
+    const consumed=await db.query("UPDATE user_mfa SET last_step=$2 WHERE user_id=$1 AND last_step<$2 RETURNING user_id",[record.id,step]);
+    if(!consumed.rowCount)return reply.code(401).send({error:"MFA code already used"});
+   }
   }
   const token = randomBytes(32).toString("hex");
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
