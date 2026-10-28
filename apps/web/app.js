@@ -50,8 +50,8 @@ async function openChannel(channel){
 }
 async function run(task){try{status("");await task()}catch(e){status(e.message)}}
 $("login-form").addEventListener("submit",e=>{e.preventDefault();run(async()=>{
-  const result=await request("/api/v1/auth/login","POST",{username:$("username").value,password:$("password").value,...($("mfa-code").value?{mfa_code:$("mfa-code").value}:{})});
-  token=result.token;$("password").value="";$("mfa-code").value="";await signedIn();
+  const result=await request("/api/v1/auth/login","POST",{username:$("username").value,password:$("password").value,...($("mfa-code").value?{mfa_code:$("mfa-code").value}:{}),...($("recovery-code").value?{recovery_code:$("recovery-code").value.trim()}:{})});
+  token=result.token;$("password").value="";$("mfa-code").value="";$("recovery-code").value="";await signedIn();
 })});
 $("register").addEventListener("click",()=>run(async()=>{
   await request("/api/v1/auth/register","POST",{username:$("username").value,password:$("password").value});

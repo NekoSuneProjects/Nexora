@@ -15,3 +15,5 @@ Confirmation now returns eight high-entropy, single-use recovery codes. They are
 
 ## MFA enrollment and session recovery hardening
 Enrollment now requires the current account password in `{ "password": "..." }`, verified with a rate-limited scrypt proof in addition to the active session. Successful single-use recovery-code login revokes the account’s existing bearer sessions and triggers cross-instance invalidation before issuing the new session. These checks are integration-tested. This still does not replace phishing-resistant passkeys, independently reviewed recovery or complete breach response.
+
+The web login now also accepts a single-use 32-character recovery code instead of a TOTP code; clear or leave the TOTP code empty when using recovery. Successful recovery revokes previously active bearer sessions.
