@@ -276,10 +276,10 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const a = Buffer.from(hash,"hex"), b = Buffer.from(record?.password_hash ?? "00".repeat(64),"hex");
   if (!record || !timingSafeEqual(a,b)) return reply.code(401).send({ error: "Invalid credentials" });
 
+  let recovered=false;
   const mfa=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=true",[record.id]);
   if(mfa.rowCount){
    if(!mfaEncryptionKey)return reply.code(503).send({error:"MFA unavailable"});
-   let recovered=false;
    if(parsed.data.recovery_code){
     const used=await db.query("DELETE FROM mfa_recovery_codes WHERE user_id=$1 AND code_hash=$2 RETURNING user_id",[record.id,hashToken(parsed.data.recovery_code)]);
     if(!used.rowCount)return reply.code(401).send({error:"Invalid recovery code"});
@@ -294,7 +294,7 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const token = randomBytes(32).toString("hex");
   // Recovery is a high-risk action: invalidate other sessions before issuing a new token.
   // Triggers notify every connected API instance after commit.
-  if(mfa.rowCount && typeof recovered!=="undefined" && recovered){
+  if(recovered){
    await db.query("DELETE FROM sessions WHERE user_id=$1",[record.id]);
    closeUserConnections(record.id);
   }
