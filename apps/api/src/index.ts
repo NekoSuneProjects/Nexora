@@ -663,7 +663,15 @@ app.get("/bot-gateway",{websocket:true},socket=>{
   checkingCredential=true;
   try{
    const live=await db.query("SELECT 1 FROM developer_apps WHERE id=$1 AND bot_token_hash=$2 AND revoked_at IS NULL",[appId,activeTokenHash]);
-   if(!live.rowCount)socket.close(4004,"Bot token revoked");
+   if(!live.rowCount){socket.close(4004,"Bot token revoked");return}
+   for(const guildId of [...subscriptions]){
+    const stillAllowed=await db.query("SELECT 1 FROM guild_bots b JOIN developer_apps a ON a.id=b.app_id WHERE b.guild_id=$1 AND b.app_id=$2 AND b.can_read_events=true AND a.revoked_at IS NULL AND a.bot_token_hash=$3",[guildId,appId,activeTokenHash]);
+    if(!stillAllowed.rowCount){
+     subscriptions.delete(guildId);botSockets.get(guildId)?.delete(socket);
+     if(!botSockets.get(guildId)?.size)botSockets.delete(guildId);
+     if(socket.readyState===1)socket.send(JSON.stringify({op:0,t:"GUILD_ACCESS_REVOKED",s:null,d:{guild_id:guildId}}));
+    }
+   }
   }catch(error){app.log.error(error);socket.close(1011,"Credential check failed")}
   finally{checkingCredential=false}
  },interval);
@@ -728,7 +736,15 @@ app.get("/gateway", { websocket:true }, (socket) => {
     checkingSession=true;
     try{
       const live=await db.query("SELECT 1 FROM sessions WHERE token_hash=$1 AND expires_at>now()",[sessionHash]);
-      if(!live.rowCount)socket.close(4004,"Session expired or revoked");
+      if(!live.rowCount){socket.close(4004,"Session expired or revoked");return}
+      if(identity){
+       for(const channelId of [...subscriptions]){
+        if(await member(identity.id,channelId))continue;
+        subscriptions.delete(channelId);sockets.get(channelId)?.delete(socket);
+        if(!sockets.get(channelId)?.size)sockets.delete(channelId);
+        if(socket.readyState===1)socket.send(JSON.stringify({op:0,t:"CHANNEL_ACCESS_REVOKED",s:null,d:{channel_id:channelId}}));
+       }
+      }
     }catch(error){app.log.error(error);socket.close(1011,"Session check failed")}
     finally{checkingSession=false}
   }, heartbeatMs);
