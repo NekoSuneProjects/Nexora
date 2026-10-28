@@ -130,6 +130,14 @@ async function processSecurityEvent(event:any){
  if(!event||typeof event!=="object")return;
  if(event.kind==="session"&&uuid.safeParse(event.user).success)closeUserConnections(event.user,event.hash);
  if(event.kind==="bot"&&uuid.safeParse(event.app).success)closeBotConnections(event.app);
+ if(event.kind==="bot_uninstall"&&uuid.safeParse(event.app).success&&uuid.safeParse(event.guild).success){
+  for(const socket of botSockets.get(event.guild)??[]){
+   if(botSocketApplication.get(socket)!==event.app)continue;
+   botSockets.get(event.guild)?.delete(socket);
+   if(socket.readyState===1)socket.send(JSON.stringify({op:0,t:"GUILD_ACCESS_REVOKED",s:null,d:{guild_id:event.guild}}));
+  }
+  if(!botSockets.get(event.guild)?.size)botSockets.delete(event.guild);
+ }
  if(event.kind==="member"&&uuid.safeParse(event.user).success&&uuid.safeParse(event.guild).success){
   const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[event.guild]);
   evictMemberSockets(event.user,channels.rows.map((r:{id:string})=>r.id));
@@ -371,6 +379,7 @@ app.delete("/api/v1/guilds/:id/bots/:appId",async(request,reply)=>{
  if(!uuid.safeParse(id).success||!uuid.safeParse(appId).success)return reply.code(400).send({message:"Invalid ID"});
  const result=await db.query("DELETE FROM guild_bots USING guilds WHERE guild_bots.guild_id=$1 AND guild_bots.app_id=$2 AND guilds.id=guild_bots.guild_id AND guilds.owner_id=$3 RETURNING guild_bots.app_id",[id,appId,user.id]);
  if(!result.rowCount)return reply.code(404).send({message:"Bot installation not found or not permitted"});
+ await publishSecurityEvent({kind:"bot_uninstall",app:appId,guild:id});
  return reply.code(204).send();
 });
 
@@ -507,6 +516,8 @@ app.post("/api/v1/guilds/:id/invites",async(request,reply)=>{
 app.post("/api/v1/invites/:code/join",async(request,reply)=>{
   const user=await auth(request.headers.authorization);
   if(!user) return reply.code(401).send({message:"Unauthorized"});
+  if(!await takeQuota("invite-ip:"+request.ip,30,3600) || !await takeQuota("invite-user:"+user.id,30,3600))
+   return reply.code(429).header("Retry-After","3600").send({message:"Too many invite attempts"});
   const code=(request.params as {code:string}).code;
   if(!/^[A-Za-z0-9_-]{32}$/.test(code)) return reply.code(404).send({message:"Invite not found"});
   const client=await db.connect();
@@ -577,7 +588,8 @@ app.delete("/api/v1/guilds/:id/members/:userId",async(request,reply)=>{
  if(!guild.rowCount)return reply.code(404).send({message:"Community not found"});
  if(userId===guild.rows[0].owner_id)return reply.code(403).send({message:"Owner cannot be removed"});
  if(user.id!==userId && user.id!==guild.rows[0].owner_id)return reply.code(403).send({message:"Only owners can remove other members"});
- await db.query("DELETE FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,userId]);
+ const removed=await db.query("DELETE FROM guild_members gm USING guilds g WHERE gm.guild_id=$1 AND gm.user_id=$2 AND g.id=gm.guild_id AND g.owner_id<>gm.user_id AND ($3=gm.user_id OR $3=g.owner_id) RETURNING gm.user_id",[id,userId,user.id]);
+ if(!removed.rowCount)return reply.code(404).send({message:"Membership not found or removal not permitted"});
  const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[id]);
  evictMemberSockets(userId,channels.rows.map((row:{id:string})=>row.id));
  await publishSecurityEvent({kind:"member",user:userId,guild:id});

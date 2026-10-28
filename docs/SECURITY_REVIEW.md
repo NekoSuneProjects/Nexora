@@ -53,3 +53,8 @@ CI now exercises real HTTP cross-origin rejection, same-origin access and header
 
 ## Additional abuse hardening
 A shared PostgreSQL IP-wide login budget (60 attempts / 15 minutes) now supplements the per username/IP budget. A per-process bounded scrypt admission gate defaults to four concurrent KDF jobs; excess requests return 503 instead of growing unbounded KDF work. These are **starter limits**, not tuned deployment guarantees: tune `MAX_ACTIVE_KDF`, validate proxy IP handling, add cross-instance load tests, and schedule expired quota cleanup. The shared database may become a denial-of-service dependency and needs monitoring.
+
+## October 2026 P0 batch: invite abuse, membership SQL and bot invalidation
+- Invite redemption now has shared PostgreSQL user/IP hourly attempt budgets; test concurrent limits and consider differentiated legitimate-user thresholds.
+- Membership deletion rechecks owner/self authorization and owner protection in the same SQL DELETE (instead of trusting a prior select).
+- Bot uninstall now publishes an event that evicts corresponding remote bot Gateway subscriptions. Recheck install permissions at message delivery as before. LISTEN/NOTIFY remains non-durable; do not claim complete cross-instance security.
