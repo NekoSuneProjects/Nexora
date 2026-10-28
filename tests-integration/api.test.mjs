@@ -168,6 +168,17 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   // Membership was revoked on the other API instance above.
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
 
+  // Message lifecycle: only a current member who authored the record can delete it.
+  const deleteCandidate=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"deletion-test-envelope",algorithm:"client-encrypted-v1"},tokenA);
+  assert.equal(deleteCandidate.status,201);
+  const deletePath="/api/v10/channels/"+channelId+"/messages/"+deleteCandidate.data.id;
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenB)).status,404);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages/"+deleteCandidate.data.id,"DELETE",undefined,tokenA)).status,404);
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenA)).status,204);
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenA)).status,404);
+  const afterDeletion=await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenA);
+  assert.equal(afterDeletion.data.some(message=>message.id===deleteCandidate.data.id),false);
+
   // Verify actual bot Gateway delivery against PostgreSQL and WebSocket.
   const dev=await request("/api/v1/developer/apps","POST",{name:"CI metadata bot"},tokenA);
   assert.equal(dev.status,201);

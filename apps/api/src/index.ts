@@ -127,6 +127,15 @@ async function processSecurityEvent(event:any){
   const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[event.guild]);
   evictMemberSockets(event.user,channels.rows.map((r:{id:string})=>r.id));
  }
+ if(event.kind==="message_deleted"&&uuid.safeParse(event.message).success&&uuid.safeParse(event.channel).success){
+  for(const socket of sockets.get(event.channel)??[]){
+   const user=socketIdentity.get(socket),hash=socketSessionHash.get(socket);
+   if(socket.readyState!==1||!user||!hash)continue;
+   const allowed=await db.query("SELECT 1 FROM sessions s JOIN guild_members gm ON gm.user_id=s.user_id JOIN channels c ON c.guild_id=gm.guild_id WHERE s.token_hash=$1 AND s.user_id=$2 AND s.expires_at>now() AND c.id=$3",[hash,user,event.channel]);
+   if(allowed.rowCount)socket.send(JSON.stringify({op:0,t:"MESSAGE_DELETE",s:null,d:{channel_id:event.channel,id:event.message}}));
+   else socket.close(4004,"Authorization revoked");
+  }
+ }
  if(event.kind==="message"&&uuid.safeParse(event.message).success&&uuid.safeParse(event.channel).success){
   const found=await db.query("SELECT m.id,m.channel_id,m.author_id,m.ciphertext,m.algorithm,m.created_at FROM messages m WHERE m.id=$1 AND m.channel_id=$2",[event.message,event.channel]);
   if(!found.rowCount)return;
@@ -597,6 +606,20 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
     [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]);
   await publishSecurityEvent({kind:"message",channel:id,message:r.rows[0].id});
   return reply.code(201).send(r.rows[0]);
+});
+// Author-only ciphertext deletion. SQL checks ownership and current membership atomically.
+app.delete("/api/v10/channels/:id/messages/:messageId",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const {id,messageId}=request.params as {id:string,messageId:string};
+ if(!uuid.safeParse(id).success||!uuid.safeParse(messageId).success)return reply.code(400).send({message:"Invalid ID"});
+ const result=await db.query(
+  "DELETE FROM messages m USING channels c,guild_members gm WHERE m.id=$1 AND m.channel_id=$2 AND m.author_id=$3 AND c.id=m.channel_id AND gm.guild_id=c.guild_id AND gm.user_id=$3 RETURNING m.id",
+  [messageId,id,user.id]
+ );
+ if(!result.rowCount)return reply.code(404).send({message:"Message not found or deletion not permitted"});
+ await publishSecurityEvent({kind:"message_deleted",channel:id,message:messageId});
+ return reply.code(204).send();
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
 

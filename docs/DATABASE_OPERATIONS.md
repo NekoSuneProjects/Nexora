@@ -32,3 +32,8 @@
 
 ## Remaining blockers
 Versioned migration ledger/locking, upgrade-from-old-schema CI, real isolated restore drill, message lifecycle semantics, cross-instance race tests, automated backup encryption and retention policy sign-off.
+
+## Implemented author-only message deletion (incremental)
+The API now exposes `DELETE /api/v10/channels/:id/messages/:messageId`. A parameterized atomic `DELETE` requires matching author, message/channel relationship and current community membership; other users, other channels and already deleted messages return 404. On success, a PostgreSQL notification emits `MESSAGE_DELETE` with IDs only to currently authorized connected user Gateway sessions (no ciphertext). The database integration suite covers author-only deletion and idempotent failure.
+
+**Limitations:** This is physical deletion from the live `messages` table, not guaranteed erasure from existing backups, cached clients or previously copied ciphertext. A durable deletion log/tombstone, replay for offline clients, moderation deletion privileges, retention-policy sign-off and multi-instance deletion tests are still required.
