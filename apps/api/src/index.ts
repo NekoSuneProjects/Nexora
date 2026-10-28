@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { Pool } from "pg";
+import { newSecret, verifyTotp, encryptSecret, decryptSecret } from "./totp.js";
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -215,8 +216,31 @@ app.post("/api/v1/auth/register", async (request, reply) => {
     throw e;
   }
 });
+const mfaEncryptionKey=process.env.MFA_ENCRYPTION_KEY && /^[a-f0-9]{64}$/i.test(process.env.MFA_ENCRYPTION_KEY)?Buffer.from(process.env.MFA_ENCRYPTION_KEY,"hex"):null;
+app.post("/api/v1/auth/mfa/enroll",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);if(!user)return reply.code(401).send({message:"Unauthorized"});
+ if(!mfaEncryptionKey)return reply.code(503).send({message:"MFA not configured"});
+ const existing=await db.query("SELECT enabled FROM user_mfa WHERE user_id=$1",[user.id]);
+ if(existing.rows[0]?.enabled)return reply.code(409).send({message:"Already enrolled"});
+ const secret=newSecret();
+ await db.query("INSERT INTO user_mfa(user_id,secret_enc) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET secret_enc=EXCLUDED.secret_enc,enabled=false,last_step=-1",[user.id,encryptSecret(secret.raw,mfaEncryptionKey)]);
+ return {secret:secret.base32,period:30,digits:6,algorithm:"SHA1"};
+});
+app.post("/api/v1/auth/mfa/confirm",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const code=z.object({code:z.string().regex(/^[0-9]{6}$/)}).safeParse(request.body);
+ if(!code.success)return reply.code(400).send({message:"Invalid code"});
+ if(!mfaEncryptionKey)return reply.code(503).send({message:"MFA not configured"});
+ if(!await takeQuota("mfa-confirm:"+user.id,10,900))return reply.code(429).send({message:"Too many attempts"});
+ const row=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=false",[user.id]);
+ if(!row.rowCount)return reply.code(409).send({message:"Enrollment not pending"});
+ const step=verifyTotp(decryptSecret(row.rows[0].secret_enc,mfaEncryptionKey),code.data.code);
+ if(step===null)return reply.code(401).send({message:"Invalid code"});
+ await db.query("UPDATE user_mfa SET enabled=true,last_step=$2 WHERE user_id=$1 AND enabled=false",[user.id,step]);
+ return {enabled:true};
+});
 app.post("/api/v1/auth/login", async (request, reply) => {
-  const parsed = credentials.safeParse(request.body);
+  const parsed = credentials.extend({mfa_code:z.string().regex(/^[0-9]{6}$/).optional()}).safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Invalid credentials" });
   const { username, password } = parsed.data;
   // An IP-wide budget prevents switching usernames to evade pairwise throttles.
@@ -234,6 +258,14 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const a = Buffer.from(hash,"hex"), b = Buffer.from(record?.password_hash ?? "00".repeat(64),"hex");
   if (!record || !timingSafeEqual(a,b)) return reply.code(401).send({ error: "Invalid credentials" });
 
+  const mfa=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=true",[record.id]);
+  if(mfa.rowCount){
+   if(!mfaEncryptionKey)return reply.code(503).send({error:"MFA unavailable"});
+   const step=verifyTotp(decryptSecret(mfa.rows[0].secret_enc,mfaEncryptionKey),parsed.data.mfa_code??"");
+   if(step===null)return reply.code(401).send({error:"MFA code required or invalid"});
+   const consumed=await db.query("UPDATE user_mfa SET last_step=$2 WHERE user_id=$1 AND last_step<$2 RETURNING user_id",[record.id,step]);
+   if(!consumed.rowCount)return reply.code(401).send({error:"MFA code already used"});
+  }
   const token = randomBytes(32).toString("hex");
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '7 days')", [hashToken(token),record.id]);
   return { token, token_type: "Bearer", expires_in: 604800 };
