@@ -127,6 +127,8 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal((await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenB)).status,403);
   const invite=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
   assert.equal(invite.status,201);
+  assert.equal((await request("/api/v1/invites/"+invite.data.code+"/join","POST")).status,401);
+  assert.equal((await request("/api/v1/invites/invalid/join","POST",undefined,tokenB)).status,404);
   const join=await request("/api/v1/invites/"+invite.data.code+"/join","POST",undefined,tokenB);
   assert.equal(join.status,200);assert.equal(join.data.already_member,false);
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,200);
@@ -207,6 +209,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    assert.ok(cursorEvents.every(item=>item.message_id!==sent.data.id),"Cursor must exclude its own message");
    assert.equal((await fetch(base+eventUrl+"?after=not-a-uuid",{headers:{authorization:"Bot "+botToken}})).status,400);
 
+   assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenB)).status,404);
    assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenA)).status,204);
    assert.equal((await fetch(base+"/api/v1/bots/guilds/"+id+"/events",{headers:{authorization:"Bot "+botToken}})).status,403);
    const after=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only-2",algorithm:"client-encrypted-v1"},tokenA);
