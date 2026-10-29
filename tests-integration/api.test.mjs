@@ -109,6 +109,17 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   const guild=await request("/api/v10/guilds","POST",{name:"CI Community"},tokenA);
   assert.equal(guild.status,201);
   const id=guild.data.id,channelId=guild.data.channels[0].id;
+  // Account-owned device onboarding requires password proof. Outsiders cannot
+  // enumerate its device identities without a shared community.
+  const publicKey="A".repeat(43);
+  const deviceBody={name:"Integration test device",identity_key:publicKey};
+  assert.equal((await request("/api/v1/devices","POST",deviceBody,tokenA)).status,400);
+  assert.equal((await request("/api/v1/devices","POST",{...deviceBody,password:"incorrect password for this account"},tokenA)).status,401);
+  const enrolled=await request("/api/v1/devices","POST",{...deviceBody,password:"a secure test passphrase 123"},tokenA);
+  assert.equal(enrolled.status,201);
+  const identityA=(await request("/api/v10/users/@me","GET",undefined,tokenA)).data.id;
+  assert.equal((await request("/api/v1/users/"+identityA+"/devices","GET",undefined,tokenB)).status,403);
+
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
   // Cross-community and cross-user negative authorization checks.
   const otherGuild=await request("/api/v10/guilds","POST",{name:"Isolated Community"},tokenB);
@@ -131,6 +142,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal((await request("/api/v1/invites/invalid/join","POST",undefined,tokenB)).status,404);
   const join=await request("/api/v1/invites/"+invite.data.code+"/join","POST",undefined,tokenB);
   assert.equal(join.status,200);assert.equal(join.data.already_member,false);
+  assert.equal((await request("/api/v1/users/"+identityA+"/devices","GET",undefined,tokenB)).status,200);
   assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,200);
   assert.equal((await request("/api/v1/guilds/"+id+"/channels","POST",{name:"should-fail"},tokenB)).status,403);
   // Multi-process PostgreSQL notification test: cross-instance metadata delivery and membership eviction.
