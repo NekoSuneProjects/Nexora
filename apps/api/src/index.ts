@@ -749,13 +749,33 @@ app.delete("/api/v10/channels/:id/messages/:messageId",async(request,reply)=>{
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const {id,messageId}=request.params as {id:string,messageId:string};
  if(!uuid.safeParse(id).success||!uuid.safeParse(messageId).success)return reply.code(400).send({message:"Invalid ID"});
- const result=await db.query(
-  "DELETE FROM messages m USING channels c,guild_members gm WHERE m.id=$1 AND m.channel_id=$2 AND m.author_id=$3 AND c.id=m.channel_id AND gm.guild_id=c.guild_id AND gm.user_id=$3 RETURNING m.id",
-  [messageId,id,user.id]
- );
- if(!result.rowCount)return reply.code(404).send({message:"Message not found or deletion not permitted"});
+ const client=await db.connect();
+ try{
+  await client.query("BEGIN");
+  const result=await client.query(
+   "DELETE FROM messages m USING channels c,guild_members gm WHERE m.id=$1 AND m.channel_id=$2 AND m.author_id=$3 AND c.id=m.channel_id AND gm.guild_id=c.guild_id AND gm.user_id=$3 RETURNING m.id",
+   [messageId,id,user.id]
+  );
+  if(!result.rowCount){await client.query("ROLLBACK");return reply.code(404).send({message:"Message not found or deletion not permitted"})}
+  await client.query("INSERT INTO message_tombstones(id,channel_id,deleted_by) VALUES($1,$2,$3)",[messageId,id,user.id]);
+  await client.query("COMMIT");
+ }catch(error){await client.query("ROLLBACK");throw error}
+ finally{client.release()}
  await publishSecurityEvent({kind:"message_deleted",channel:id,message:messageId});
  return reply.code(204).send();
+});
+// Tombstones contain IDs only and allow authorized offline clients to resync.
+app.get("/api/v10/channels/:id/deletions",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const channel=(request.params as {id:string}).id;
+ if(!uuid.safeParse(channel).success)return reply.code(400).send({message:"Invalid channel ID"});
+ if(!await member(user.id,channel))return reply.code(403).send({message:"Forbidden"});
+ const cursor=z.object({after:z.string().datetime({offset:true}).optional()}).safeParse(request.query);
+ if(!cursor.success)return reply.code(400).send({message:"Invalid cursor"});
+ const from=cursor.data.after??"1970-01-01T00:00:00.000Z";
+ const rows=await db.query("SELECT id,channel_id,deleted_at FROM message_tombstones WHERE channel_id=$1 AND deleted_at>$2::timestamptz ORDER BY deleted_at,id LIMIT 100",[channel,from]);
+ return {deletions:rows.rows};
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
 

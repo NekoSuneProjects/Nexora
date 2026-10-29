@@ -40,3 +40,6 @@ The API now exposes `DELETE /api/v10/channels/:id/messages/:messageId`. A parame
 
 ## CI restore evidence
 CI now takes a PostgreSQL custom-format dump after integration tests and restores it into an independent `nexora_restore_ci` database. The workflow verifies the restored user table and messages table existence. This is an isolated, disposable CI drill; it does not replace encrypted off-site backup management, production-sized restore rehearsal, RPO/RTO measurement or incident response testing.
+
+## Message tombstones and offline reconciliation
+A deleted message now creates a metadata-only tombstone inside the same PostgreSQL transaction that deletes the ciphertext. The authenticated endpoint `GET /api/v10/channels/:id/deletions?after=<ISO timestamp>` returns up to 100 tombstones to current community members. No ciphertext is preserved in the tombstone, and cross-community reads return 403. Cursor pagination must include the last timestamp with care: multiple deletions at the same timestamp may require a composite cursor in a later version. The tombstone lifetime is currently indefinite, pending an approved retention/legal-hold policy. Backup snapshots and clients may retain older copies of ciphertext.
