@@ -736,7 +736,7 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   // INSERT ... SELECT performs the membership check within the write statement,
   // avoiding the separate authorization-query/INSERT race on this route.
   const r=await db.query(
-    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
+    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 AND (($5='client-encrypted-v1' AND ($4::jsonb->'context'->>'epoch')::bigint=COALESCE(e.epoch,1)) OR $5<>'client-encrypted-v1') RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
     [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]
   );
   if(!r.rowCount)return reply.code(403).send({message:"Forbidden"});
@@ -776,6 +776,30 @@ app.get("/api/v10/channels/:id/deletions",async(request,reply)=>{
  const from=cursor.data.after??"1970-01-01T00:00:00.000Z";
  const rows=await db.query("SELECT id,channel_id,deleted_at FROM message_tombstones WHERE channel_id=$1 AND deleted_at>$2::timestamptz ORDER BY deleted_at,id LIMIT 100",[channel,from]);
  return {deletions:rows.rows};
+});
+
+app.get("/api/v1/channels/:id/keys",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const id=(request.params as {id:string}).id;if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid channel"});
+ if(!await member(user.id,id))return reply.code(403).send({message:"Forbidden"});
+ const rows=await db.query("SELECT c.guild_id,COALESCE(e.epoch,1)::text AS epoch FROM channels c LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$1",[id]);
+ if(!rows.rowCount)return reply.code(404).send({message:"Channel not found"});
+ const recipients=await db.query("SELECT d.id,d.user_id,d.identity_key FROM user_devices d JOIN guild_members gm ON gm.user_id=d.user_id WHERE gm.guild_id=$1 AND d.revoked_at IS NULL ORDER BY d.user_id,d.id",[rows.rows[0].guild_id]);
+ const wrapped=await db.query("SELECT device_id,wrapped_key FROM channel_device_keys WHERE channel_id=$1 AND epoch=$2",[id,rows.rows[0].epoch]);
+ return {epoch:Number(rows.rows[0].epoch),recipients:recipients.rows,wrapped:wrapped.rows};
+});
+app.put("/api/v1/channels/:id/keys/:deviceId",async(request,reply)=>{
+ const user=await auth(request.headers.authorization);
+ if(!user)return reply.code(401).send({message:"Unauthorized"});
+ const {id,deviceId}=request.params as {id:string,deviceId:string};
+ if(!uuid.safeParse(id).success||!uuid.safeParse(deviceId).success)return reply.code(400).send({message:"Invalid ID"});
+ const body=z.object({epoch:z.number().int().positive(),wrapped_key:z.record(z.string(),z.unknown())}).safeParse(request.body);
+ if(!body.success)return reply.code(400).send({message:"Invalid key envelope"});
+ const inserted=await db.query(
+ "INSERT INTO channel_device_keys(channel_id,epoch,device_id,wrapped_key) SELECT c.id,$2,d.id,$4::jsonb FROM channels c JOIN guild_members author ON author.guild_id=c.guild_id JOIN user_devices d ON d.id=$3 AND d.revoked_at IS NULL JOIN guild_members recipient ON recipient.guild_id=c.guild_id AND recipient.user_id=d.user_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$1 AND author.user_id=$5 AND COALESCE(e.epoch,1)=$2 ON CONFLICT(channel_id,epoch,device_id) DO NOTHING RETURNING device_id",
+ [id,body.data.epoch,deviceId,JSON.stringify(body.data.wrapped_key),user.id]);
+ if(!inserted.rowCount)return reply.code(409).send({message:"Key rejected: membership, epoch or duplicate"});
+ return reply.code(201).send({device_id:deviceId,epoch:body.data.epoch});
 });
 // Initial native event gateway: NOT yet discord.js protocol compatible.
 
