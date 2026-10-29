@@ -209,6 +209,13 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   assert.equal((await request(deletePath,"DELETE",undefined,tokenA)).status,404);
   const afterDeletion=await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenA);
   assert.equal(afterDeletion.data.some(message=>message.id===deleteCandidate.data.id),false);
+  const tombstones=await request("/api/v10/channels/"+channelId+"/deletions","GET",undefined,tokenA);
+  assert.equal(tombstones.status,200);
+  const deletion=tombstones.data.deletions.find(row=>row.id===deleteCandidate.data.id);
+  assert.ok(deletion,"Deleted message must have a tombstone available for offline clients");
+  assert.equal(Object.hasOwn(deletion,"ciphertext"),false);
+  assert.equal((await request("/api/v10/channels/"+channelId+"/deletions","GET",undefined,tokenB)).status,403);
+
 
   // Verify actual bot Gateway delivery against PostgreSQL and WebSocket.
   const dev=await request("/api/v1/developer/apps","POST",{name:"CI metadata bot"},tokenA);
