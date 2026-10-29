@@ -58,3 +58,6 @@ A shared PostgreSQL IP-wide login budget (60 attempts / 15 minutes) now suppleme
 - Invite redemption now has shared PostgreSQL user/IP hourly attempt budgets; test concurrent limits and consider differentiated legitimate-user thresholds.
 - Membership deletion rechecks owner/self authorization and owner protection in the same SQL DELETE (instead of trusting a prior select).
 - Bot uninstall now publishes an event that evicts corresponding remote bot Gateway subscriptions. Recheck install permissions at message delivery as before. LISTEN/NOTIFY remains non-durable; do not claim complete cross-instance security.
+
+## Device directory onboarding restrictions
+Added fresh-password verification and a shared PostgreSQL abuse budget before a device public key can be enrolled, reducing the risk from stolen bearer tokens. Device-key lookups are scoped to users in the requesting user’s communities; no global account enumeration of device identities. This authenticates account control at enrollment, not genuine device possession or identity pinning. Device signatures, key transparency, TOFU pinning and out-of-band verification remain required before calling client E2EE secure.

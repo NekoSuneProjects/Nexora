@@ -332,6 +332,15 @@ app.post("/api/v1/devices",async(request,reply)=>{
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const data=deviceInput.safeParse(request.body);
  if(!data.success)return reply.code(400).send({message:"Invalid device public-key record"});
+ // Proof of password is required for key enrollment, even with a stolen session.
+ const password=z.object({password:z.string().min(12).max(256)}).safeParse(request.body);
+ if(!password.success)return reply.code(400).send({message:"Password required to enroll device"});
+ if(!await takeQuota("device-enroll:"+user.id,6,900))return reply.code(429).send({message:"Too many attempts"});
+ const owner=await db.query("SELECT password_salt,password_hash FROM users WHERE id=$1",[user.id]);
+ if(!owner.rowCount)return reply.code(401).send({message:"Unauthorized"});
+ const proof=Buffer.from(await passwordHash(password.data.password,owner.rows[0].password_salt),"hex");
+ const expected=Buffer.from(owner.rows[0].password_hash,"hex");
+ if(proof.length!==expected.length||!timingSafeEqual(proof,expected))return reply.code(401).send({message:"Invalid password"});
  const id=randomUUID();
  try {
   const result=await db.query("INSERT INTO user_devices(id,user_id,name,identity_key) VALUES($1,$2,$3,$4) RETURNING id,name,identity_key,created_at",[id,user.id,data.data.name,data.data.identity_key]);
@@ -350,6 +359,9 @@ app.get("/api/v1/users/:id/devices",async(request,reply)=>{
  const id=(request.params as {id:string}).id;
  if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid user ID"});
  // Public keys are intended for client-side verification, never a server attestation of trust.
+ // Reveal another user's device keys only within a currently shared community.
+ const shared=await db.query("SELECT 1 FROM guild_members gm JOIN guild_members peer ON peer.guild_id=gm.guild_id WHERE gm.user_id=$1 AND peer.user_id=$2 LIMIT 1",[user.id,id]);
+ if(user.id!==id&&!shared.rowCount)return reply.code(403).send({message:"No shared community"});
  const result=await db.query("SELECT id,identity_key,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[id]);
  return result.rows;
 });
