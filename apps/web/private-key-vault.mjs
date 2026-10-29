@@ -19,8 +19,10 @@ export async function decryptDeviceVault(vault,passphrase){
  const data=JSON.parse(dec.decode(raw));if(data.version!==1)throw Error("Invalid device backup");
  const agreement=await subtle.importKey("jwk",data.agreement,{name:"ECDH",namedCurve:"P-256"},true,["deriveBits"]);
  const signing=await subtle.importKey("jwk",data.signing,{name:"ECDSA",namedCurve:"P-256"},true,["sign"]);
- const agreementPublic=await subtle.importKey("jwk",{...data.agreement,d:undefined},{name:"ECDH",namedCurve:"P-256"},true,[]);
- const signingPublic=await subtle.importKey("jwk",{...data.signing,d:undefined},{name:"ECDSA",namedCurve:"P-256"},true,["verify"]);
+ const {d:agreementPrivate,key_ops:agreementOps,...agreementJwk}=data.agreement;
+ const agreementPublic=await subtle.importKey("jwk",agreementJwk,{name:"ECDH",namedCurve:"P-256"},true,[]);
+ const {d:signingPrivate,key_ops:signingOps,...signingJwk}=data.signing;
+ const signingPublic=await subtle.importKey("jwk",signingJwk,{name:"ECDSA",namedCurve:"P-256"},true,["verify"]);
  return {agreement:{privateKey:agreement,publicKey:agreementPublic},signing:{privateKey:signing,publicKey:signingPublic}};
 }
 export async function saveDeviceVault(vault){
