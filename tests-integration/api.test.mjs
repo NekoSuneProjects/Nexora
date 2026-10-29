@@ -156,6 +156,12 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
     await sleep(100);
    }
    assert.ok(online,"Replica must start");
+   // The shared pair quota was exhausted on API 3100; API 3101 must also reject it.
+   const sharedThrottle=await fetch("http://127.0.0.1:3101/api/v1/auth/login",{
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({username:a,password:"intentionally-wrong-password"})
+   });
+   assert.equal(sharedThrottle.status,429,"A second API instance must share login quotas");
    remote=new WebSocket("ws://127.0.0.1:3101/gateway");
    const packets=[];remote.addEventListener("message",e=>packets.push(JSON.parse(e.data)));
    async function waitPacket(type){
@@ -179,6 +185,9 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
    const removeId=(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id;
    assert.equal((await request("/api/v1/guilds/"+id+"/members/"+removeId,"DELETE",undefined,tokenA)).status,204);
    await waitPacket("CHANNEL_ACCESS_REVOKED");
+   remote.send(JSON.stringify({op:42,d:{channel_id:channelId}}));
+   await sleep(150);
+   assert.equal(packets.some(packet=>packet.t==="CHANNEL_SUBSCRIBED"&&packet.d?.channel_id===channelId),false,"Removed member must not resubscribe on remote Gateway");
   }finally{
    remote?.close();replica.kill("SIGTERM");
    await Promise.race([new Promise(resolve=>replica.once("exit",resolve)),sleep(3000)]);
