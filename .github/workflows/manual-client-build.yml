@@ -25,12 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - component: api
-            dockerfile: Dockerfile
-          - component: web
-            dockerfile: Dockerfile.web
-    if: ${{ inputs.build_target == 'both' || inputs.build_target == matrix.component }}
+        component: ${{ fromJSON(inputs.build_target == 'both' && '["api","web"]' || format('["{0}"]', inputs.build_target)) }}
     steps:
       - uses: actions/checkout@v4
       - name: Normalize GHCR image name
@@ -52,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: ${{ matrix.component == 'api' && 'Dockerfile' || 'Dockerfile.web' }}
           platforms: linux/amd64,linux/arm64
           push: ${{ inputs.publish_ghcr }}
           tags: |
@@ -61,7 +56,7 @@ jobs:
       - name: Export downloadable amd64 image
         shell: bash
         run: |
-          docker buildx build --platform linux/amd64 -f "${{ matrix.dockerfile }}" --load -t "nexora-${{ matrix.component }}:manual" .
+          docker buildx build --platform linux/amd64 -f "${{ matrix.component == 'api' && 'Dockerfile' || 'Dockerfile.web' }}" --load -t "nexora-${{ matrix.component }}:manual" .
           docker save "nexora-${{ matrix.component }}:manual" | gzip > "nexora-${{ matrix.component }}-amd64.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
