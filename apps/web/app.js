@@ -3,6 +3,9 @@ import {encryptDeviceVault,decryptDeviceVault,saveDeviceVault,loadDeviceVault} f
 const $ = id => document.getElementById(id);
 let token = null, currentGuild = null, currentChannel = null, currentGuildOwner = false, selfId = null;
 let ws = null, heartbeat = null;
+function connectionState(value,online=false){ const el=$("gateway-state");if(!el)return;el.textContent=value;el.classList.toggle("online",online); }
+function updateComposer(){const send=$("send-encrypted-button");if(send)send.disabled=!currentChannel||!unlockedDevice;}
+
 let unlockedDevice=null,roomKeys=new Map();
 async function prepareRoomKey(channelId){
  if(!unlockedDevice)throw Error("Unlock your encrypted device vault first.");
@@ -36,7 +39,7 @@ async function request(path, method="GET", body){
 async function signedIn(){
   const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;selfId=me.id;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
-  await loadGuilds();await loadProfile();await loadSessions();connectGateway();
+  await loadGuilds();await loadProfile();await loadSessions();updateComposer();connectGateway();
 }
 async function loadGuilds(){
   const guilds=await request("/api/v10/users/@me/guilds");
@@ -51,7 +54,7 @@ async function loadGuilds(){
   if(currentGuild && !active)currentGuild=null;
 }
 async function openGuild(id){
-  currentGuild=id;currentChannel=null;$("messages").replaceChildren();$("channel-title").textContent="Select a channel";
+  currentGuild=id;currentChannel=null;updateComposer();$("messages").replaceChildren();$("channel-title").textContent="Select a channel";
   await loadGuilds();await loadMembers();
   const channels=await request("/api/v10/guilds/"+encodeURIComponent(id)+"/channels");
   $("channels").replaceChildren();
@@ -63,19 +66,20 @@ async function openGuild(id){
 }
 async function openChannel(channel){
   if(ws?.readyState===1 && currentChannel)ws.send(JSON.stringify({op:43,d:{channel_id:currentChannel}}));
-  currentChannel=channel.id;$("channel-title").textContent="# "+channel.name;
+  currentChannel=channel.id;updateComposer();$("channel-title").textContent="# "+channel.name;
   if(ws?.readyState===1)ws.send(JSON.stringify({op:42,d:{channel_id:currentChannel}}));
   const messages=await request("/api/v10/channels/"+encodeURIComponent(channel.id)+"/messages");
   const parent=$("messages");parent.replaceChildren();
   if(!messages.length)parent.append(node("p","No encrypted message envelopes yet."));
   for(const m of messages){const entry=document.createElement("article");
-    entry.append(node("strong","Author "+m.author_id),node("p","Encrypted envelope ("+m.algorithm+")"));
+    entry.append(node("strong","Author "+m.author_id));
+    const meta=node("p","Encrypted envelope ("+m.algorithm+") · "+new Date(m.created_at).toLocaleString());meta.classList.add("message-meta");entry.append(meta);
     try {
       const envelope=JSON.parse(m.ciphertext);
       const state=await prepareRoomKey(channel.id);
       if(state.epoch!==envelope.context?.epoch)throw Error("Older epoch or untrusted device");
       const text=await decryptMessage(state.key,envelope,{room:channel.id,sender:m.author_id,epoch:state.epoch});
-      entry.append(node("p",text));
+      const content=node("p",text);content.classList.add("message-text");entry.append(content);
     }catch{entry.append(node("code","Encrypted message – unlock trusted device or obtain correct epoch key."))}
     parent.append(entry);
   }
@@ -105,7 +109,7 @@ $("create-guild").addEventListener("submit",e=>{e.preventDefault();run(async()=>
 })});
 $("logout").addEventListener("click",()=>run(async()=>{
   try{await request("/api/v1/auth/logout","POST")}finally{
-    token=null;currentGuild=null;currentChannel=null;unlockedDevice=null;roomKeys.clear();
+    token=null;currentGuild=null;currentChannel=null;unlockedDevice=null;roomKeys.clear();updateComposer();
     $("logged-in").classList.add("hidden");$("logged-out").classList.remove("hidden");status("Signed out.");
   }
 }));
@@ -178,13 +182,18 @@ async function connectGateway(){
      heartbeat=setInterval(()=>{if(socket.readyState===1)socket.send(JSON.stringify({op:1,d:null}))},packet.d.heartbeat_interval);
    }else if(packet.t==="READY"){
      if(currentChannel)socket.send(JSON.stringify({op:42,d:{channel_id:currentChannel}}));
-     status("Real-time Gateway connected.");
+     connectionState("Connected",true);status("Real-time Gateway connected.");
+   }else if(packet.t==="CHANNEL_ACCESS_REVOKED" && packet.d?.channel_id===currentChannel){
+     currentChannel=null;roomKeys.clear();updateComposer();$("messages").replaceChildren();$("channel-title").textContent="Channel access revoked";
+     status("Your membership has changed. Refresh communities.");
+   }else if(packet.t==="MESSAGE_DELETE" && packet.d?.channel_id===currentChannel){
+     run(async()=>{const channels=await request("/api/v10/guilds/"+encodeURIComponent(currentGuild)+"/channels");const channel=channels.find(c=>c.id===currentChannel);if(channel)await openChannel(channel)});
    }else if(packet.t==="MESSAGE_CREATE" && packet.d?.channel_id===currentChannel){
      // Only opaque ciphertext is rendered, never interpreted as plaintext.
      run(async()=>{const selected=currentChannel;const channels=await request("/api/v10/guilds/"+encodeURIComponent(currentGuild)+"/channels");const channel=channels.find(c=>c.id===selected);if(channel)await openChannel(channel)});
    }
  };
- socket.onclose=()=>{if(ws!==socket)return;if(heartbeat){clearInterval(heartbeat);heartbeat=null}status("Gateway disconnected. Refresh to reconnect.")};
+ socket.onclose=()=>{if(ws!==socket)return;if(heartbeat){clearInterval(heartbeat);heartbeat=null}connectionState("Disconnected");status("Gateway disconnected. Use Refresh to reconnect.")};
 }
 
 $("device-enroll-form").addEventListener("submit",event=>{event.preventDefault();run(async()=>{
@@ -201,7 +210,7 @@ $("device-enroll-form").addEventListener("submit",event=>{event.preventDefault()
 $("device-unlock-form").addEventListener("submit",event=>{event.preventDefault();run(async()=>{
   const vault=await loadDeviceVault();if(!vault)throw new Error("No local device vault found.");
   const device=await decryptDeviceVault(vault,$("device-unlock-passphrase").value);
-  unlockedDevice=device;roomKeys.clear();
+  unlockedDevice=device;roomKeys.clear();updateComposer();
   $("device-unlock-passphrase").value="";
   const id=await fingerprint(await publicBundle(device));
   $("device-vault-status").textContent="Local private keys verified. Fingerprint: "+id;
@@ -227,3 +236,6 @@ async function loadMembers(){
    $("members").append(row);
  }
 }
+
+$("refresh-workspace").addEventListener("click",()=>run(async()=>{await loadGuilds();if(currentGuild){const previous=currentChannel;await openGuild(currentGuild);if(previous){const channels=await request("/api/v10/guilds/"+encodeURIComponent(currentGuild)+"/channels");const selected=channels.find(c=>c.id===previous);if(selected)await openChannel(selected)}}await loadSessions();await connectGateway();status("Workspace refreshed.")}));
+updateComposer();
