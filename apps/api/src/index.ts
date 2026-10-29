@@ -736,7 +736,7 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   // INSERT ... SELECT performs the membership check within the write statement,
   // avoiding the separate authorization-query/INSERT race on this route.
   const r=await db.query(
-    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 AND (($5='client-encrypted-v1' AND ($4::jsonb->'context'->>'epoch')::bigint=COALESCE(e.epoch,1)) OR $5<>'client-encrypted-v1') RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
+    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 AND (CASE WHEN left($4,1)='{' THEN COALESCE(($4::jsonb->'context'->>'epoch')::bigint,-1)=COALESCE(e.epoch,1) ELSE true END) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
     [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]
   );
   if(!r.rowCount)return reply.code(403).send({message:"Forbidden"});
