@@ -48,6 +48,11 @@ jobs:
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
+      - name: Verify migration ledger and checksum idempotency
+        run: |
+          bash scripts/migrate.sh
+          bash scripts/migrate.sh
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM schema_migrations" | grep -qx 3
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
       - name: Verify an isolated PostgreSQL backup restore
