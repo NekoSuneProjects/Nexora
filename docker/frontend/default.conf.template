@@ -8,7 +8,7 @@ server {
  add_header Cache-Control no-store always;
  location = / { try_files /home.html =404; }
  location = /app { try_files /index.html =404; }
- location ~ ^/app/channels/[a-fA-F0-9-]{36}/[a-fA-F0-9-]{36}$ { try_files /index.html =404; }
+ location ~ "^/app/channels/[a-fA-F0-9-]{36}/[a-fA-F0-9-]{36}$" { try_files /index.html =404; }
  location ~ ^/(app\.js|crypto\.mjs|private-key-vault\.mjs)$ { try_files $uri =404; }
  location /api/ {
    proxy_pass ${API_UPSTREAM};
