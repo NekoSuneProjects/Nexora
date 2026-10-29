@@ -39,6 +39,7 @@ jobs:
         run: |
           docker build -f Dockerfile -t nexora-api:ci .
           docker build -f Dockerfile.web -t nexora-web:ci .
+          docker run --rm -e API_UPSTREAM=http://api:3000 nexora-web:ci nginx -t
       - name: Set up PostgreSQL schema
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/schema.sql
       - name: Apply integrity migration twice (idempotency check)
