@@ -1,0 +1,110 @@
+name: Nexora Docker — Release and Manual Testing
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Source to test (only the development branch is permitted for manual runs)
+        required: true
+        type: choice
+        default: feat/initial-platform-foundation
+        options:
+          - feat/initial-platform-foundation
+      build_target:
+        description: Images to build
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - api
+          - web
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: nexora-docker-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: Dockerfile
+          - component: web
+            dockerfile: Dockerfile.web
+    steps:
+      - name: Checkout selected source
+        if: ${{ github.event_name == 'push' || inputs.build_target == 'both' || inputs.build_target == matrix.component }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || 'main' }}
+          persist-credentials: false
+      - name: Check build inputs
+        if: ${{ github.event_name == 'push' || inputs.build_target == 'both' || inputs.build_target == matrix.component }}
+        id: files
+        shell: bash
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          if [[ -f "$DOCKERFILE" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "::notice::Main currently has no $DOCKERFILE; release image will start after application source is merged."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Missing $DOCKERFILE on selected testing branch"
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@v3
+        if: ${{ steps.files.outputs.available == 'true' }}
+      - uses: docker/setup-buildx-action@v3
+        if: ${{ steps.files.outputs.available == 'true' }}
+      - name: Log in to GHCR
+        if: ${{ steps.files.outputs.available == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Calculate image tags
+        if: ${{ steps.files.outputs.available == 'true' }}
+        id: tags
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${COMPONENT}"
+          sha="$(git rev-parse --short=12 HEAD)"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            {
+              echo 'value<<EOF'
+              echo "$image:latest"
+              echo "$image:release-$sha"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'value<<EOF'
+              echo "$image:testing"
+              echo "$image:test-$sha"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and publish AMD64/ARM64
+        if: ${{ steps.files.outputs.available == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+          provenance: true
