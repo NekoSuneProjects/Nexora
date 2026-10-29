@@ -1,0 +1,7 @@
+# Experimental browser cryptography foundation
+
+The browser-side `apps/web/crypto.mjs` module now implements **actual** WebCrypto primitives: independent ECDH P-256 agreement and ECDSA P-256 signing device keys, fingerprint calculation, AES-256-GCM messages with per-message random 96-bit nonces and room/sender/epoch associated data, and signed ephemeral-ECDH + HKDF room-key wraps. The Node test verifies two-device encryption/decryption and tampering rejection.
+
+**This is NOT completed E2EE.** Nexora does not yet securely persist local private keys, offer authenticated enrollment, pin verified identities in the UI, distribute key envelopes through authenticated API endpoints, rotate keys on group membership changes, recover lost devices, provide forward secrecy or an audited multi-device/group protocol. The normal chat UI does not call these primitives yet. Neither the caller-controlled `client-encrypted-v1` marker nor unverified public device listings confer authenticity. Do not use Nexora for confidential conversations until the protocol and threat model are implemented and independently reviewed.
+
+Recommended follow-up: select an independently reviewed MLS implementation; formalize authenticated credential binding, key transparency and epoch semantics; isolate private key persistence using non-extractable keys where possible; test revocation, device verification and offline epoch recovery.

@@ -1,0 +1,352 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { createHash, createHmac } from "node:crypto";
+import pg from "pg";
+
+const base="http://127.0.0.1:3100";
+const processHandle=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3100",HOST:"127.0.0.1",NODE_ENV:"test",MFA_ENCRYPTION_KEY:"11".repeat(32)},stdio:"pipe"});
+let log="";
+processHandle.stdout.on("data",d=>{log+=d.toString()});
+processHandle.stderr.on("data",d=>{log+=d.toString()});
+async function ready(){
+ for(let attempt=0;attempt<60;attempt++){
+  if(processHandle.exitCode!==null)throw new Error("API exited: "+log);
+  try{const r=await fetch(base+"/health");if(r.ok)return}catch{}
+  await sleep(500);
+ }
+ throw new Error("API not ready: "+log);
+}
+async function request(path,method="GET",body,token){
+ const res=await fetch(base+path,{method,headers:{...(body!==undefined?{"content-type":"application/json"}:{}),...(token?{authorization:"Bearer "+token}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})});
+ let data=null;try{data=await res.json()}catch{}
+ return {status:res.status,data};
+}
+
+async function botSocket(token,guildId){
+ const ws=new WebSocket("ws://127.0.0.1:3100/bot-gateway");
+ const queue=[];
+ const listeners=[];
+ ws.addEventListener("message",event=>{
+  const packet=JSON.parse(event.data);
+  if(listeners.length)listeners.shift()(packet);else queue.push(packet);
+ });
+ const next=()=>queue.length?Promise.resolve(queue.shift()):new Promise(resolve=>listeners.push(resolve));
+ const receive=async(type)=>{
+  for(let i=0;i<8;i++){
+   const packet=await Promise.race([next(),sleep(2500).then(()=>{throw Error("Bot Gateway timeout waiting for "+type)})]);
+   if(packet.t===type||packet.op===type)return packet;
+  }
+  throw Error("Expected "+type);
+ };
+ await receive(10);
+ ws.send(JSON.stringify({op:2,d:{token}}));
+ await receive("READY");
+ ws.send(JSON.stringify({op:42,d:{guild_id:guildId}}));
+ await receive("GUILD_SUBSCRIBED");
+ return {ws,receive};
+}
+
+
+async function userSocket(token,channelId){
+ const ws=new WebSocket("ws://127.0.0.1:3100/gateway");
+ const queue=[],listeners=[];
+ ws.addEventListener("message",event=>{
+  const packet=JSON.parse(event.data);
+  if(listeners.length)listeners.shift()(packet);else queue.push(packet);
+ });
+ const receive=async(expected)=>{
+  for(let tries=0;tries<8;tries++){
+   const packet=queue.length?queue.shift():await Promise.race([
+    new Promise(resolve=>listeners.push(resolve)),
+    sleep(2500).then(()=>{throw Error("Timed out waiting for user Gateway "+expected)})
+   ]);
+   if(packet.op===expected||packet.t===expected)return packet;
+  }
+  throw Error("Missing user Gateway packet "+expected);
+ };
+ await receive(10);
+ ws.send(JSON.stringify({op:2,d:{token}}));
+ await receive("READY");
+ ws.send(JSON.stringify({op:42,d:{channel_id:channelId}}));
+ await receive("CHANNEL_SUBSCRIBED");
+ return ws;
+}
+function closedSocket(ws,expectedCode){
+ return new Promise((resolve,reject)=>{
+  if(ws.readyState===WebSocket.CLOSED)return reject(Error("Socket closed before close listener attached"));
+  const timer=setTimeout(()=>reject(Error("Timed out waiting for WebSocket revocation")),3000);
+  ws.addEventListener("close",event=>{
+   clearTimeout(timer);
+   try{assert.equal(event.code,expectedCode);resolve()}catch(e){reject(e)}
+  },{once:true});
+ });
+}
+
+test("API uses a real PostgreSQL database and enforces community membership",async()=>{
+ try{
+  await ready();
+  // Exercise actual HTTP Origin policy and security response headers.
+  const crossOrigin=await fetch(base+"/api/v10/users/@me",{headers:{Origin:"https://untrusted.example"}});
+  assert.equal(crossOrigin.status,403);
+  const sameOrigin=await fetch(base+"/health",{headers:{Origin:base}});
+  assert.equal(sameOrigin.status,200);
+  assert.equal(sameOrigin.headers.get("x-content-type-options"),"nosniff");
+  assert.equal(sameOrigin.headers.get("x-frame-options"),"DENY");
+  assert.match(sameOrigin.headers.get("content-security-policy")??"",/frame-ancestors 'none'/);
+  const suffix=Math.random().toString(36).slice(2,10);
+  const a="alpha_"+suffix,b="bravo_"+suffix;
+  assert.equal((await request("/api/v1/auth/register","POST",{username:a,password:"a secure test passphrase 123"})).status,201);
+  assert.equal((await request("/api/v1/auth/register","POST",{username:b,password:"another secure passphrase 123"})).status,201);
+  const loginA=await request("/api/v1/auth/login","POST",{username:a,password:"a secure test passphrase 123"});
+  const loginB=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(loginA.status,200);assert.equal(loginB.status,200);
+  const tokenA=loginA.data.token,tokenB=loginB.data.token;
+  for(let attempt=0;attempt<6;attempt++)assert.equal((await request("/api/v1/auth/login","POST",{username:a,password:"intentionally-wrong-password"})).status,401);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:a,password:"intentionally-wrong-password"})).status,429);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"})).status,200);
+  const guild=await request("/api/v10/guilds","POST",{name:"CI Community"},tokenA);
+  assert.equal(guild.status,201);
+  const id=guild.data.id,channelId=guild.data.channels[0].id;
+  // Account-owned device onboarding requires password proof. Outsiders cannot
+  // enumerate its device identities without a shared community.
+  const publicKey="A".repeat(43);
+  const deviceBody={name:"Integration test device",identity_key:publicKey};
+  assert.equal((await request("/api/v1/devices","POST",deviceBody,tokenA)).status,400);
+  assert.equal((await request("/api/v1/devices","POST",{...deviceBody,password:"incorrect password for this account"},tokenA)).status,401);
+  const enrolled=await request("/api/v1/devices","POST",{...deviceBody,password:"a secure test passphrase 123"},tokenA);
+  assert.equal(enrolled.status,201);
+  const identityA=(await request("/api/v10/users/@me","GET",undefined,tokenA)).data.id;
+  assert.equal((await request("/api/v1/users/"+identityA+"/devices","GET",undefined,tokenB)).status,403);
+
+  assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
+  // Cross-community and cross-user negative authorization checks.
+  const otherGuild=await request("/api/v10/guilds","POST",{name:"Isolated Community"},tokenB);
+  assert.equal(otherGuild.status,201);
+  const otherId=otherGuild.data.id,otherChannel=otherGuild.data.channels[0].id;
+  assert.equal((await request("/api/v10/guilds/"+otherId+"/channels","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages","POST",{ciphertext:"forbidden",algorithm:"client-encrypted-v1"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/invites","POST",{max_uses:1,expires_hours:1},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/members","GET",undefined,tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/channels","POST",{name:"forbidden-channel"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/channels/"+otherChannel,"PATCH",{name:"forbidden-rename"},tokenA)).status,403);
+  assert.equal((await request("/api/v1/guilds/"+otherId+"/members/"+(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id,"DELETE",undefined,tokenA)).status,403);
+
+  assert.equal((await request("/api/v10/users/@me","GET")).status,401);
+  assert.equal((await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenB)).status,403);
+  const invite=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
+  assert.equal(invite.status,201);
+  assert.equal((await request("/api/v1/invites/"+invite.data.code+"/join","POST")).status,401);
+  assert.equal((await request("/api/v1/invites/invalid/join","POST",undefined,tokenB)).status,404);
+  const join=await request("/api/v1/invites/"+invite.data.code+"/join","POST",undefined,tokenB);
+  assert.equal(join.status,200);assert.equal(join.data.already_member,false);
+  assert.equal((await request("/api/v1/users/"+identityA+"/devices","GET",undefined,tokenB)).status,200);
+  assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,200);
+  assert.equal((await request("/api/v1/guilds/"+id+"/channels","POST",{name:"should-fail"},tokenB)).status,403);
+  // Multi-process PostgreSQL notification test: cross-instance metadata delivery and membership eviction.
+  const replica=spawn(process.execPath,["node_modules/tsx/dist/cli.mjs","apps/api/src/index.ts"],{env:{...process.env,PORT:"3101",HOST:"127.0.0.1",NODE_ENV:"test"},stdio:"pipe"});
+  let replicaLog="";replica.stdout.on("data",d=>replicaLog+=d.toString());replica.stderr.on("data",d=>replicaLog+=d.toString());
+  let remote;
+  try{
+   let online=false;
+   for(let n=0;n<50;n++){if(replica.exitCode!==null)throw Error("Replica exited "+replicaLog);
+    try{if((await fetch("http://127.0.0.1:3101/health")).ok){online=true;break}}catch{}
+    await sleep(100);
+   }
+   assert.ok(online,"Replica must start");
+   // The shared pair quota was exhausted on API 3100; API 3101 must also reject it.
+   const sharedThrottle=await fetch("http://127.0.0.1:3101/api/v1/auth/login",{
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({username:a,password:"intentionally-wrong-password"})
+   });
+   assert.equal(sharedThrottle.status,429,"A second API instance must share login quotas");
+   remote=new WebSocket("ws://127.0.0.1:3101/gateway");
+   const packets=[];remote.addEventListener("message",e=>packets.push(JSON.parse(e.data)));
+   async function waitPacket(type){
+    for(let n=0;n<70;n++){const pos=packets.findIndex(p=>p.t===type||p.op===type);
+     if(pos>=0)return packets.splice(pos,1)[0];
+     await sleep(40);
+    }
+    throw Error("Remote socket timed out waiting for "+type);
+   }
+   await waitPacket(10);
+   remote.send(JSON.stringify({op:2,d:{token:tokenB}}));await waitPacket("READY");
+   remote.send(JSON.stringify({op:42,d:{channel_id:channelId}}));await waitPacket("CHANNEL_SUBSCRIBED");
+   const sentAcross=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-across-instances",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(sentAcross.status,201);
+   assert.equal((await waitPacket("MESSAGE_CREATE")).d.id,sentAcross.data.id);
+   assert.equal((await request("/api/v10/channels/"+channelId+"/messages/"+sentAcross.data.id,"DELETE",undefined,tokenA)).status,204);
+   const crossDelete=await waitPacket("MESSAGE_DELETE");
+   assert.equal(crossDelete.d.id,sentAcross.data.id);
+   assert.equal(crossDelete.d.channel_id,channelId);
+   assert.equal(Object.hasOwn(crossDelete.d,"ciphertext"),false);
+   const removeId=(await request("/api/v10/users/@me","GET",undefined,tokenB)).data.id;
+   assert.equal((await request("/api/v1/guilds/"+id+"/members/"+removeId,"DELETE",undefined,tokenA)).status,204);
+   await waitPacket("CHANNEL_ACCESS_REVOKED");
+   remote.send(JSON.stringify({op:42,d:{channel_id:channelId}}));
+   await sleep(150);
+   assert.equal(packets.some(packet=>packet.t==="CHANNEL_SUBSCRIBED"&&packet.d?.channel_id===channelId),false,"Removed member must not resubscribe on remote Gateway");
+  }finally{
+   remote?.close();replica.kill("SIGTERM");
+   await Promise.race([new Promise(resolve=>replica.once("exit",resolve)),sleep(3000)]);
+  }
+
+  // Membership was revoked on the other API instance above.
+  assert.equal((await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenB)).status,403);
+
+  // Ensure a former member is denied message insertion by the guarded SQL write.
+  assert.equal((await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"former-member",algorithm:"client-encrypted-v1"},tokenB)).status,403);
+
+  // Message lifecycle: only a current member who authored the record can delete it.
+  const deleteCandidate=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"deletion-test-envelope",algorithm:"client-encrypted-v1"},tokenA);
+  assert.equal(deleteCandidate.status,201);
+  const deletePath="/api/v10/channels/"+channelId+"/messages/"+deleteCandidate.data.id;
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenB)).status,404);
+  assert.equal((await request("/api/v10/channels/"+otherChannel+"/messages/"+deleteCandidate.data.id,"DELETE",undefined,tokenA)).status,404);
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenA)).status,204);
+  assert.equal((await request(deletePath,"DELETE",undefined,tokenA)).status,404);
+  const afterDeletion=await request("/api/v10/channels/"+channelId+"/messages","GET",undefined,tokenA);
+  assert.equal(afterDeletion.data.some(message=>message.id===deleteCandidate.data.id),false);
+  const tombstones=await request("/api/v10/channels/"+channelId+"/deletions","GET",undefined,tokenA);
+  assert.equal(tombstones.status,200);
+  const deletion=tombstones.data.deletions.find(row=>row.id===deleteCandidate.data.id);
+  assert.ok(deletion,"Deleted message must have a tombstone available for offline clients");
+  assert.equal(Object.hasOwn(deletion,"ciphertext"),false);
+  assert.equal((await request("/api/v10/channels/"+channelId+"/deletions","GET",undefined,tokenB)).status,403);
+
+
+  // Verify actual bot Gateway delivery against PostgreSQL and WebSocket.
+  const dev=await request("/api/v1/developer/apps","POST",{name:"CI metadata bot"},tokenA);
+  assert.equal(dev.status,201);
+  const appId=dev.data.id,botToken=dev.data.bot_token;
+  assert.equal((await request("/api/v1/guilds/"+id+"/bots","POST",{app_id:appId,can_read_events:true},tokenA)).status,201);
+  const bot=await botSocket(botToken,id);
+  try{
+   const sent=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(sent.status,201);
+   const event=await bot.receive("MESSAGE_METADATA_CREATE");
+   assert.deepEqual(event.d,{guild_id:id,channel_id:channelId,message_id:sent.data.id});
+   assert.equal(Object.hasOwn(event.d,"ciphertext"),false);
+
+   const eventUrl="/api/v1/bots/guilds/"+id+"/events";
+   const history=await fetch(base+eventUrl,{headers:{authorization:"Bot "+botToken}});
+   assert.equal(history.status,200);
+   const historyBody=await history.json();
+   assert.ok(historyBody.events.some(item=>item.message_id===sent.data.id));
+   assert.ok(historyBody.events.every(item=>!Object.hasOwn(item,"ciphertext")));
+   const cursor=await fetch(base+eventUrl+"?after="+sent.data.id,{headers:{authorization:"Bot "+botToken}});
+   assert.equal(cursor.status,200);
+   const cursorEvents=(await cursor.json()).events;
+   assert.ok(cursorEvents.every(item=>item.message_id!==sent.data.id),"Cursor must exclude its own message");
+   assert.equal((await fetch(base+eventUrl+"?after=not-a-uuid",{headers:{authorization:"Bot "+botToken}})).status,400);
+
+   assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenB)).status,404);
+   assert.equal((await request("/api/v1/guilds/"+id+"/bots/"+appId,"DELETE",undefined,tokenA)).status,204);
+   assert.equal((await fetch(base+"/api/v1/bots/guilds/"+id+"/events",{headers:{authorization:"Bot "+botToken}})).status,403);
+   const after=await request("/api/v10/channels/"+channelId+"/messages","POST",{ciphertext:"opaque-test-only-2",algorithm:"client-encrypted-v1"},tokenA);
+   assert.equal(after.status,201);
+   // Permission is checked for every emission, so uninstalling prevents additional events.
+   const unexpected=await Promise.race([bot.receive("MESSAGE_METADATA_CREATE").then(()=>true).catch(()=>false),sleep(400).then(()=>false)]);
+   assert.equal(unexpected,false);
+  }finally{bot.ws.close()}
+  const rotated=await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenA);
+  assert.equal(rotated.status,200);
+  assert.notEqual(rotated.data.bot_token,botToken);
+  const oldIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+botToken}});
+  assert.equal(oldIdentity.status,401);
+  const newIdentity=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
+  assert.equal(newIdentity.status,200);
+  assert.equal((await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenB)).status,404);
+
+  // A rotated credential invalidates the already authenticated bot socket.
+  const freshBot=await request("/api/v1/guilds/"+id+"/bots","POST",{app_id:appId,can_read_events:true},tokenA);
+  assert.equal(freshBot.status,201);
+  const connectedBot=await botSocket(rotated.data.bot_token,id);
+  try{
+   const revoked=closedSocket(connectedBot.ws,4004);
+   const startedAt=Date.now();
+   const newerToken=await request("/api/v1/developer/apps/"+appId+"/rotate-token","POST",undefined,tokenA);
+   assert.equal(newerToken.status,200);
+   await revoked;
+   assert.ok(Date.now()-startedAt<900,"Local bot connection should close without waiting for the 1-second credential watchdog");
+   const oldBot=await fetch(base+"/api/v1/bots/@me",{headers:{authorization:"Bot "+rotated.data.bot_token}});
+   assert.equal(oldBot.status,401);
+  }finally{connectedBot.ws.close()}
+  for(let n=0;n<3;n++)assert.equal((await request("/api/v1/auth/register","POST",{username:"extra_"+suffix+"_"+n,password:"another long test password 123"})).status,201);
+  assert.equal((await request("/api/v1/auth/register","POST",{username:"over_"+suffix,password:"another long test password 123"})).status,429);
+
+  const secondSession=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(secondSession.status,200);
+  // User b was removed from the community earlier; restore membership with a fresh invite.
+  const inviteAgain=await request("/api/v1/guilds/"+id+"/invites","POST",{max_uses:1,expires_hours:1},tokenA);
+  assert.equal(inviteAgain.status,201);
+  assert.equal((await request("/api/v1/invites/"+inviteAgain.data.code+"/join","POST",undefined,tokenB)).status,200);
+  const wsOld=await userSocket(tokenB,channelId);
+  const wsNew=await userSocket(secondSession.data.token,channelId);
+  try{
+   const oldClosed=closedSocket(wsOld,4004);
+   assert.equal((await request("/api/v1/auth/logout","POST",undefined,tokenB)).status,204);
+   await oldClosed;
+   assert.equal(wsNew.readyState,WebSocket.OPEN);
+   const newClosed=closedSocket(wsNew,4004);
+   assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,secondSession.data.token)).status,204);
+   await newClosed;
+  }finally{wsOld.close();wsNew.close()}
+
+  // Simulate another API instance expiring an authenticated session directly in PostgreSQL.
+  const expiringLogin=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(expiringLogin.status,200);
+  const expiringToken=expiringLogin.data.token;
+  const expiringSocket=await userSocket(expiringToken,channelId);
+  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+  try{
+   const closed=closedSocket(expiringSocket,4004);
+   const tokenHash=createHash("sha256").update(expiringToken).digest("hex");
+   await pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1",[tokenHash]);
+   await closed;
+  }finally{expiringSocket.close();await pool.end()}
+  // Direct SQL session deletion simulates a separate instance; DB trigger should close
+  // an authenticated Gateway without waiting for its periodic watchdog.
+  const directSession=await request("/api/v1/auth/login","POST",{username:b,password:"another secure passphrase 123"});
+  assert.equal(directSession.status,200);
+  const directSocket=await userSocket(directSession.data.token,channelId);
+  const directPool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+  try{
+   const closed=closedSocket(directSocket,4004);
+   const hashed=createHash("sha256").update(directSession.data.token).digest("hex");
+   const start=Date.now();
+   await directPool.query("DELETE FROM sessions WHERE token_hash=$1",[hashed]);
+   await closed;
+   assert.ok(Date.now()-start<1000,"Database-triggered session invalidation should precede 1-second watchdog");
+  }finally{directSocket.close();await directPool.end()}
+  // Authenticator integration: enrollment, confirmation, enforced login and replay rejection.
+  const mfaLogin=await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123"});
+  assert.equal(mfaLogin.status,200);
+  assert.equal((await request("/api/v1/auth/mfa/enroll","POST",undefined,mfaLogin.data.token)).status,400);
+  assert.equal((await request("/api/v1/auth/mfa/enroll","POST",{password:"incorrect password for enrollment"},mfaLogin.data.token)).status,401);
+  const enrollment=await request("/api/v1/auth/mfa/enroll","POST",{password:"another long test password 123"},mfaLogin.data.token);
+  assert.equal(enrollment.status,200);
+  function decodeBase32(input){const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";let bits=0,n=0,out=[];for(const char of input){n=(n<<5)|alphabet.indexOf(char);bits+=5;if(bits>=8){bits-=8;out.push((n>>>bits)&255)}}return Buffer.from(out)}
+  function currentCode(secret){const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));const h=createHmac("sha1",decodeBase32(secret)).update(counter).digest();const offset=h[19]&15;return String((h.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,"0")}
+  const code=currentCode(enrollment.data.secret);
+  const confirmed=await request("/api/v1/auth/mfa/confirm","POST",{code},mfaLogin.data.token);
+  assert.equal(confirmed.status,200);
+  assert.equal(confirmed.data.recovery_codes.length,8);
+  const recovery=confirmed.data.recovery_codes[0];
+  const recoveryLogin=await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",recovery_code:recovery});
+  assert.equal(recoveryLogin.status,200);
+  assert.equal((await request("/api/v10/users/@me","GET",undefined,mfaLogin.data.token)).status,401);
+  assert.equal((await request("/api/v10/users/@me","GET",undefined,recoveryLogin.data.token)).status,200);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",recovery_code:recovery})).status,401);
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123"})).status,401);
+  // Confirmation consumes the current time-step: a code cannot be replayed at login.
+  assert.equal((await request("/api/v1/auth/login","POST",{username:"extra_"+suffix+"_0",password:"another long test password 123",mfa_code:code})).status,401);
+  assert.equal((await request("/api/v1/auth/logout-all","POST",undefined,tokenA)).status,204);
+  assert.equal((await request("/api/v10/users/@me","GET",undefined,tokenA)).status,401);
+ }finally{
+  processHandle.kill("SIGTERM");
+  await Promise.race([new Promise(resolve=>processHandle.once("exit",resolve)),sleep(3000)]);
+ }
+},{timeout:50000});

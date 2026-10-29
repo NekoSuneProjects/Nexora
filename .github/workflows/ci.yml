@@ -1,0 +1,80 @@
+name: Nexora CI
+on:
+  pull_request:
+  push:
+    branches: [main, feat/initial-platform-foundation]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: nexora_test
+          POSTGRES_PASSWORD: nexora_test_ci_only
+          POSTGRES_DB: nexora_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexora_test -d nexora_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://nexora_test:nexora_test_ci_only@127.0.0.1:5432/nexora_test
+      HOST: 127.0.0.1
+      PORT: 3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - run: node --check apps/web/app.js
+      - run: node --check scripts/start-api.mjs
+      - name: Build deployment images
+        run: |
+          docker build -f Dockerfile -t nexora-api:ci .
+          docker build -f Dockerfile.web -t nexora-web:ci .
+          docker run --rm -e API_UPSTREAM=http://127.0.0.1:3000 nexora-web:ci nginx -t
+      - name: Set up PostgreSQL schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/schema.sql
+      - name: Apply integrity migration twice (idempotency check)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0002_integrity.sql
+      - name: Install transaction-scoped security invalidation triggers
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0003_security_notifications.sql
+      - name: Apply authenticator MFA migration twice
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0004_mfa.sql
+      - name: Verify migration ledger and checksum idempotency
+        run: |
+          bash scripts/migrate.sh
+          bash scripts/migrate.sh
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM schema_migrations" | grep -qx 6
+      - name: Apply persisted security event migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0005_security_outbox.sql
+      - name: Apply message tombstones migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0006_message_tombstones.sql
+      - name: Apply E2EE channel epoch migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0007_channel_keys.sql
+      - name: Integration tests
+        run: node --test tests-integration/*.test.mjs
+      - name: Verify an isolated PostgreSQL backup restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-acl --file="$RUNNER_TEMP/nexora-ci.dump"
+          pg_restore --list "$RUNNER_TEMP/nexora-ci.dump" >/dev/null
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nexora_restore_ci'
+          RESTORE_URL="${DATABASE_URL%/*}/nexora_restore_ci"
+          pg_restore --dbname="$RESTORE_URL" --no-owner --no-acl --exit-on-error "$RUNNER_TEMP/nexora-ci.dump"
+          psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS restored_users FROM users"
+          psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT to_regclass('public.messages') IS NOT NULL" | grep -qx t

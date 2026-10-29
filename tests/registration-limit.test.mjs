@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import{readFile}from"node:fs/promises";
+test("registration quotas are checked before password hashing",async()=>{const s=await readFile(new URL("../apps/api/src/index.ts",import.meta.url),"utf8");const route=s.slice(s.indexOf('app.post("/api/v1/auth/register"'),s.indexOf('// Single-process login abuse'));assert.ok(route.indexOf("reserveRegistration(request.ip)")<route.indexOf("passwordHash(password, salt)"));assert.match(route,/reply.code\(429\)/);});

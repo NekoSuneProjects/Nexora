@@ -1,0 +1,7 @@
+import { createHmac, timingSafeEqual, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+export function newSecret(){const raw=randomBytes(20);let acc=0,bits=0,out="";for(const b of raw){acc=(acc<<8)|b;bits+=8;while(bits>=5){bits-=5;out+=alphabet[(acc>>>bits)&31]}}if(bits)out+=alphabet[(acc<<(5-bits))&31];return {raw,base32:out}}
+export function totp(raw:Buffer,step:number){const count=Buffer.alloc(8);count.writeBigUInt64BE(BigInt(step));const digest=createHmac("sha1",raw).update(count).digest();const offset=digest[19]&15;return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,"0")}
+export function verifyTotp(raw:Buffer,code:string){if(!/^[0-9]{6}$/.test(code))return null;const now=Math.floor(Date.now()/30000);for(const step of [now-1,now,now+1]){if(timingSafeEqual(Buffer.from(code),Buffer.from(totp(raw,step))))return step}return null}
+export function encryptSecret(raw:Buffer,key:Buffer){const nonce=randomBytes(12),cipher=createCipheriv("aes-256-gcm",key,nonce);const encrypted=Buffer.concat([cipher.update(raw),cipher.final()]);return Buffer.concat([nonce,cipher.getAuthTag(),encrypted]).toString("base64")}
+export function decryptSecret(value:string,key:Buffer){const b=Buffer.from(value,"base64");if(b.length<29)throw Error("Invalid secret");const cipher=createDecipheriv("aes-256-gcm",key,b.subarray(0,12));cipher.setAuthTag(b.subarray(12,28));return Buffer.concat([cipher.update(b.subarray(28)),cipher.final()])}
