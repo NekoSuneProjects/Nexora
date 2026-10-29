@@ -3,6 +3,9 @@ import {encryptDeviceVault,decryptDeviceVault,saveDeviceVault,loadDeviceVault} f
 const $ = id => document.getElementById(id);
 let token = null, currentGuild = null, currentChannel = null, currentGuildOwner = false, selfId = null;
 let ws = null, heartbeat = null;
+let requestedRoute=null;
+const deepLink=/^\/app\/channels\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/i.exec(location.pathname);
+if(deepLink)requestedRoute={guild:deepLink[1],channel:deepLink[2]};
 function connectionState(value,online=false){ const el=$("gateway-state");if(!el)return;el.textContent=value;el.classList.toggle("online",online); }
 function updateComposer(){const send=$("send-encrypted-button");if(send)send.disabled=!currentChannel||!unlockedDevice;}
 
@@ -40,6 +43,7 @@ async function signedIn(){
   const me=await request("/api/v10/users/@me"); $("user").textContent=me.username;selfId=me.id;
   $("logged-out").classList.add("hidden");$("logged-in").classList.remove("hidden");
   await loadGuilds();await loadProfile();await loadSessions();updateComposer();connectGateway();
+  if(requestedRoute){const route=requestedRoute;requestedRoute=null;try{await openGuild(route.guild);const channels=await request("/api/v10/guilds/"+encodeURIComponent(route.guild)+"/channels");const match=channels.find(c=>c.id===route.channel);if(match)await openChannel(match)}catch(error){status("Could not open saved channel: "+error.message)}}
 }
 async function loadGuilds(){
   const guilds=await request("/api/v10/users/@me/guilds");
@@ -66,7 +70,8 @@ async function openGuild(id){
 }
 async function openChannel(channel){
   if(ws?.readyState===1 && currentChannel)ws.send(JSON.stringify({op:43,d:{channel_id:currentChannel}}));
-  currentChannel=channel.id;updateComposer();$("channel-title").textContent="# "+channel.name;
+  currentChannel=channel.id;
+  history.replaceState(null,"","/app/channels/"+encodeURIComponent(currentGuild)+"/"+encodeURIComponent(channel.id));updateComposer();$("channel-title").textContent="# "+channel.name;
   if(ws?.readyState===1)ws.send(JSON.stringify({op:42,d:{channel_id:currentChannel}}));
   const messages=await request("/api/v10/channels/"+encodeURIComponent(channel.id)+"/messages");
   const parent=$("messages");parent.replaceChildren();
