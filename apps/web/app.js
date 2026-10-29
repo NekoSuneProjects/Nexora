@@ -1,3 +1,5 @@
+import {createDevice,publicBundle,fingerprint} from "/crypto.mjs";
+import {encryptDeviceVault,decryptDeviceVault,saveDeviceVault,loadDeviceVault} from "/private-key-vault.mjs";
 const $ = id => document.getElementById(id);
 let token = null, currentGuild = null, currentChannel = null, currentGuildOwner = false, selfId = null;
 let ws = null, heartbeat = null;
@@ -144,6 +146,25 @@ async function connectGateway(){
  };
  socket.onclose=()=>{if(ws!==socket)return;if(heartbeat){clearInterval(heartbeat);heartbeat=null}status("Gateway disconnected. Refresh to reconnect.")};
 }
+
+$("device-enroll-form").addEventListener("submit",event=>{event.preventDefault();run(async()=>{
+  if(await loadDeviceVault())throw new Error("Local device vault already exists. Export/recover it before replacing this device.");
+  const proof=$("device-proof").value,passphrase=$("device-vault-passphrase").value;
+  if(passphrase.length<16)throw new Error("Use a vault passphrase of at least 16 characters.");
+  const device=await createDevice(),bundle=await publicBundle(device),id=await fingerprint(bundle);
+  const vault=await encryptDeviceVault(device,passphrase);
+  await request("/api/v1/devices","POST",{name:$("device-name").value,identity_key:id,password:proof});
+  await saveDeviceVault(vault);
+  $("device-proof").value="";$("device-vault-passphrase").value="";
+  $("device-vault-status").textContent="Encrypted local device saved. Public-key fingerprint: "+id+" (verify out of band before trusting another device).";
+})});
+$("device-unlock-form").addEventListener("submit",event=>{event.preventDefault();run(async()=>{
+  const vault=await loadDeviceVault();if(!vault)throw new Error("No local device vault found.");
+  const device=await decryptDeviceVault(vault,$("device-unlock-passphrase").value);
+  $("device-unlock-passphrase").value="";
+  const id=await fingerprint(await publicBundle(device));
+  $("device-vault-status").textContent="Local private keys verified. Fingerprint: "+id;
+})});
 $("logout").addEventListener("click",disconnectGateway);
 $("logout-all").addEventListener("click",disconnectGateway);
 

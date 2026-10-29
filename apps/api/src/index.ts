@@ -208,6 +208,10 @@ const frontend = fileURLToPath(new URL("../../../web/index.html", import.meta.ur
 const frontendJs = fileURLToPath(new URL("../../../web/app.js", import.meta.url));
 app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(await readFile(frontend)));
 app.get("/app.js", async (_request, reply) => reply.header("Cache-Control", "no-store").type("application/javascript").send(await readFile(frontendJs)));
+const cryptoJs=fileURLToPath(new URL("../../../web/crypto.mjs",import.meta.url));
+const vaultJs=fileURLToPath(new URL("../../../web/private-key-vault.mjs",import.meta.url));
+app.get("/crypto.mjs",async(_request,reply)=>reply.type("application/javascript").send(await readFile(cryptoJs)));
+app.get("/private-key-vault.mjs",async(_request,reply)=>reply.type("application/javascript").send(await readFile(vaultJs)));
 app.get("/api/v10/gateway", async (request) => {
   const host = request.headers.host ?? "localhost:3000";
   // Only use forwarded proto if an administrator has configured a trusted proxy.
