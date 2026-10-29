@@ -53,6 +53,8 @@ jobs:
           bash scripts/migrate.sh
           bash scripts/migrate.sh
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM schema_migrations" | grep -qx 3
+      - name: Apply persisted security event migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0005_security_outbox.sql
       - name: Integration tests
         run: node --test tests-integration/*.test.mjs
       - name: Verify an isolated PostgreSQL backup restore

@@ -127,7 +127,7 @@ function evictMemberSockets(userId:string,channelIds:string[]){
 // PostgreSQL notification bus: every API instance must LISTEN to the same database.
 const eventsClient=await db.connect();
 async function publishSecurityEvent(payload:Record<string,string>){
- await db.query("SELECT pg_notify('nexora_security', $1)",[JSON.stringify(payload)]);
+ await db.query("WITH e AS (INSERT INTO security_events(payload) VALUES($1::jsonb) RETURNING payload) SELECT pg_notify('nexora_security',payload::text) FROM e",[JSON.stringify(payload)]);
 }
 async function processSecurityEvent(event:any){
  if(!event||typeof event!=="object")return;
@@ -176,6 +176,31 @@ eventsClient.on("notification",msg=>{
 });
 eventsClient.on("error",error=>{app.log.error(error);process.exitCode=1;void app.close()});
 await eventsClient.query("LISTEN nexora_security");
+/*
+ * A persisted best-effort catch-up path covers missed LISTEN notifications.
+ * Cursors are per process because subscriptions are per process. The periodic
+ * session/member watchdog remains the safety fallback after event gaps.
+ */
+let securityCursor=BigInt((await db.query("SELECT COALESCE(MAX(id),0)::text AS id FROM security_events")).rows[0].id);
+let replaying=false;
+const catchUpSecurityEvents=async()=>{
+ if(replaying)return;
+ replaying=true;
+ try{
+  for(let batch=0;batch<10;batch++){
+   const found=await db.query("SELECT id::text AS id,payload FROM security_events WHERE id>$1 ORDER BY id LIMIT 200",[securityCursor.toString()]);
+   if(!found.rows.length)break;
+   for(const record of found.rows){
+    await processSecurityEvent(record.payload);
+    securityCursor=BigInt(record.id);
+   }
+  }
+ }catch(error){app.log.error(error);await app.close()}
+ finally{replaying=false}
+};
+const catchUpInterval=setInterval(()=>{void catchUpSecurityEvents()},5000);
+app.addHook("onClose",async()=>clearInterval(catchUpInterval));
+
 
 await app.register(websocket);
 app.get("/health", async () => ({ status: "ok", service: "nexora" }));
