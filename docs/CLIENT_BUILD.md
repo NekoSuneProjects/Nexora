@@ -29,3 +29,5 @@ The URL is **not** baked into either installer. On first desktop launch, enter y
 ## Security and testing
 
 Desktop packages are unsigned developer builds. Verify artifacts yourself and do not redistribute them as production secure releases. Nexora E2EE remains experimental, with unreviewed multi-device trust and membership recovery.
+
+The Electron IPC URL-configuration bridge is restricted to the local setup page; remote frontend JavaScript cannot call it. Keep the desktop setup URL on a trusted HTTPS origin and treat this wrapper as an unsigned preview.

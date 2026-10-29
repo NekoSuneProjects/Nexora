@@ -14,13 +14,14 @@ function show(){
  if(target){window.loadURL(target)}else{window.loadFile(path.join(__dirname,"setup.html"))}
 }
 app.whenReady().then(()=>{
- ipcMain.handle("nexora:configure",async(_event,url)=>{
+ ipcMain.handle("nexora:configure",async(event,url)=>{
+  if(!event.senderFrame?.url.startsWith("file:"))throw Error("Configuration is available only in local setup.");
   const value=validate(url);fs.mkdirSync(path.dirname(configFile()),{recursive:true});
   fs.writeFileSync(configFile(),JSON.stringify({frontendUrl:value}),{mode:0o600});
   show();return value;
  });
  ipcMain.handle("nexora:settings",()=>stored());
- ipcMain.handle("nexora:reset",()=>{try{fs.unlinkSync(configFile())}catch{}show()});
+ ipcMain.handle("nexora:reset",event=>{if(!event.senderFrame?.url.startsWith("file:"))throw Error("Not permitted");try{fs.unlinkSync(configFile())}catch{}show()});
  window=new BrowserWindow({width:1280,height:820,minWidth:760,minHeight:520,
   webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,"preload.cjs")}});
  window.webContents.setWindowOpenHandler(({url})=>{if(url.startsWith("https://"))shell.openExternal(url);return{action:"deny"}});
