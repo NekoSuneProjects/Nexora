@@ -1,0 +1,64 @@
+name: Manual Web and Desktop Builds
+on:
+  workflow_dispatch:
+    inputs:
+      frontend_url:
+        description: "Optional deployed web URL. Leave empty to configure desktop on first launch."
+        required: false
+        type: string
+      build_target:
+        description: "What to build"
+        required: true
+        default: all
+        type: choice
+        options: [all, web, desktop]
+permissions:
+  contents: read
+jobs:
+  web:
+    if: ${{ inputs.build_target == 'all' || inputs.build_target == 'web' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build web Docker image
+        run: docker build -f Dockerfile.web -t nexora-web:manual .
+      - name: Export Docker image
+        run: docker save nexora-web:manual | gzip > nexora-web-docker.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexora-web-docker
+          path: nexora-web-docker.tar.gz
+          retention-days: 7
+  desktop-linux:
+    if: ${{ inputs.build_target == 'all' || inputs.build_target == 'desktop' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AppImage in Docker
+        run: |
+          docker build -f Dockerfile.desktop -t nexora-desktop-builder:manual .
+          mkdir -p desktop-dist
+          docker run --rm -e ELECTRON_BUILDER_CACHE=/tmp/electron-cache -v "$PWD/desktop-dist:/artifacts" nexora-desktop-builder:manual
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexora-desktop-linux
+          path: desktop-dist/*
+          retention-days: 7
+  desktop-windows:
+    if: ${{ inputs.build_target == 'all' || inputs.build_target == 'desktop' }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm run build:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexora-desktop-windows
+          path: apps/desktop/dist/*
+          retention-days: 7
