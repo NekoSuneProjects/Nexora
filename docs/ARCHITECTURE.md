@@ -2,21 +2,22 @@
 
 Nexora is an independent product, **not a fork of Spacebar or Discord**.
 
-## Implemented in the first foundation
+## Implemented
 
-- Fastify API with PostgreSQL-backed users, hashed passwords and opaque expiring sessions.
-- Guild creation, membership, one default channel, retrieval and encrypted-envelope storage.
-- Native WebSocket gateway proof of concept for authorized channel subscriptions.
-- Early Discord-shaped REST paths as a compatibility target, **not** full Discord API equivalence.
-- Docker Compose PostgreSQL and API; static web placeholder.
+- A Fastify API (`apps/api/src/index.ts` covers core/auth/gateway; `community.ts` covers roles, moderation, DMs, social features and key distribution) backed by PostgreSQL, with hashed passwords and opaque expiring sessions.
+- Communities with roles and Nexora-native permission bits (`permissions.ts`), a role hierarchy, categories, announcement channels, bans, an audit log and invites.
+- Direct and group messages, stored as private `guilds.kind='dm'` communities. They reuse membership checks, key epochs and Gateway delivery, so DMs get exactly the same authorization and E2EE path as servers.
+- A friends and block graph, plus presence derived from Gateway heartbeats (`user_presence`), so every API instance agrees on status.
+- A native WebSocket Gateway: channel subscriptions, typing, and member-targeted dispatch events delivered through the cross-instance PostgreSQL outbox (`security_events` plus LISTEN/NOTIFY, deduplicated by row ID).
+- A browser client (`apps/web`) that encrypts every message with `crypto.mjs`, and multi-member room-key distribution in `e2ee.mjs`. See `docs/E2EE_CHAT_PREVIEW.md`.
+- Some early Discord-shaped REST paths as a compatibility target, **not** full Discord API equivalence.
+- Docker Compose (PostgreSQL + API), an nginx web container, and an Electron desktop shell.
 
 ## Deliberately not claimed as complete
 
-- **E2EE:** server accepts opaque ciphertext but no cryptographic client, key exchange, device verification, encrypted backup, or secure sender identity exists yet. The `client-encrypted-v1` marker is caller-supplied and DOES NOT attest encryption. Do not use for confidential conversations yet.
-- **Discord.js:** API schemas, Snowflake IDs, Gateway lifecycle, event seq/resume, interactions, OAuth2, permissions and bot tokens are not implemented. Current gateway op 42 is Nexora-specific. Existing Discord bots cannot yet connect unchanged.
-- **Security:** rate limiting, MFA, abuse controls, CORS policy, HTTPS proxy, audit logs, invite flows and key transparency still needed before public deployment.
-- **Voice/video:** self-hosted LiveKit (with independent key exchange for media E2EE) is planned but not integrated.
-- **Profiles:** OAuth account linking, verified badges, Fortnite/Apex providers, animated assets and import tooling are planned.
+- **E2EE:** a prototype group scheme (per-epoch AES keys, signed ECDH grants, TOFU device pinning, key commitments). It has no MLS, no forward secrecy within an epoch and no message signatures, the server can add devices, and nothing has been reviewed independently. Do not use it for confidential conversations.
+- **Discord.js:** Snowflake IDs, Gateway resume, interactions and OAuth2 are not implemented. Existing Discord bots cannot connect unchanged.
+- **Voice/video, attachments, per-channel permissions:** planned (see TODO.md).
 
 ## Security model and design decisions
 
@@ -30,8 +31,4 @@ Nexora is an independent product, **not a fork of Spacebar or Discord**.
 
 ## Next milestones
 
-1. Integration tests + rate limiting + session revocation + invite membership.
-2. Full frontend auth, guild and channel UI.
-3. Independently reviewed E2EE protocol client and cross-device recovery.
-4. Discord bot REST and Gateway conformance suite.
-5. LiveKit calls, OAuth/social connections, game cards and templates.
+See [TODO.md](../TODO.md) for the prioritised backlog: P0 security gates (MLS, sender signatures, key transparency, independent review), then attachments, per-channel permissions, voice and video, and the Discord compatibility adapter.

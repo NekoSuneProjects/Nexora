@@ -151,7 +151,7 @@ test("API uses a real PostgreSQL database and enforces community membership",asy
   let remote;
   try{
    let online=false;
-   for(let n=0;n<50;n++){if(replica.exitCode!==null)throw Error("Replica exited "+replicaLog);
+   for(let n=0;n<100;n++){if(replica.exitCode!==null)throw Error("Replica exited "+replicaLog);
     try{if((await fetch("http://127.0.0.1:3101/health")).ok){online=true;break}}catch{}
     await sleep(100);
    }

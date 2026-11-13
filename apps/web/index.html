@@ -1,61 +1,130 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Nexora | Channels</title>
-<style>
-:root{font:16px system-ui;color-scheme:dark;background:#10131a;color:#f1f3f8}
-*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{background:#6fddba;color:#10131a;border:0;padding:10px 15px;border-radius:9px;cursor:pointer;font-weight:700}button:disabled{opacity:.5}input,select{width:100%;padding:10px 12px;border-radius:8px;background:#202837;border:1px solid #465169;color:white}label{display:block;margin:14px 0 6px}main{max-width:1200px;margin:auto;padding:26px}h1{color:#6fddba;margin-bottom:6px}.muted{color:#9daabe}.warning{background:#352d1e;color:#f3dba2;border-radius:10px;padding:13px 16px;margin:20px 0}.shell{display:grid;grid-template-columns:240px 1fr;gap:20px}.panel{padding:22px;border-radius:14px;background:#1a202b;border:1px solid #394452}nav button{display:block;width:100%;margin:8px 0;text-align:left;background:#303b49;color:#ecf4f5}nav button.selected{background:#6fddba;color:#121620}.hidden{display:none}form{max-width:380px}#messages{min-height:180px;max-height:55vh;overflow:auto}article{border-bottom:1px solid #394452;padding:12px 0;overflow-wrap:anywhere}code{font-size:.85rem}#status{min-height:1.6rem}@media(max-width:700px){.shell{grid-template-columns:1fr}}
-
-/* Responsive app shell and testing controls */
-textarea{font:inherit;width:100%;min-height:76px;resize:vertical;padding:12px;border:1px solid #465169;background:#202837;color:#fff;border-radius:9px}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #99ffdf;outline-offset:2px}.workspace-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.workspace-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.workspace-controls button{background:#303b49;color:#ecf4f5}.connection{font-size:.82rem;color:#ffcf89;border:1px solid #60503a;border-radius:20px;padding:5px 11px}.connection.online{color:#99ffce;border-color:#356f59}.preview-guide{border-left:3px solid #6fddba;padding-left:12px;margin:12px 0;color:#bacbd3}.chat-panel{display:flex;flex-direction:column;min-height:470px}.chat-panel #messages{flex:1;min-height:210px;max-height:55vh}.chat-panel form{max-width:none}.message-meta{font-size:.77rem;color:#a0afc1}.message-text{white-space:pre-wrap;line-height:1.5}.shell nav{max-height:78vh;overflow-y:auto}.workspace{margin-top:20px}@media(max-width:900px){main{padding:12px}.panel{padding:14px}.shell{grid-template-columns:220px minmax(0,1fr);gap:10px}}@media(max-width:620px){.shell{grid-template-columns:1fr}.shell nav{max-height:45vh}.chat-panel{min-height:340px}.workspace-header h2{margin:8px 0}}
-.workspace-nav{display:flex;align-items:center;gap:12px;padding:12px 0}.workspace-nav a{color:#a1dfc5;text-decoration:none;font-weight:700}.shell nav{background:#151f30}.chat-panel{background:#111a2b;border-color:#2a3a50}#messages article{padding:16px 14px;border-bottom:1px solid #243247}#guilds button.selected,#channels button.selected{background:#4f857b;color:#fff}.community-mark{background:#263348;border-radius:12px;padding:10px;font-size:.76rem;color:#a4b5d4}#status{font-size:.86rem;color:#b4d6d0}
-
-/* Chat client palette inspired by modern gaming communication dashboards. */
-:root{background:#0c111c;color:#eaf1fa}
-main{max-width:1550px;padding:20px 22px}
-body{background:linear-gradient(135deg,#0b101a,#101b27 75%)}
-h1{letter-spacing:-.055em}
-.panel{background:#17212e;border:1px solid #2c3c4b;box-shadow:0 8px 25px #070b1260}
-.shell.workspace{grid-template-columns:76px 264px minmax(0,1fr);gap:10px;align-items:stretch}
-.server-rail{border-radius:17px;background:#111b27;border:1px solid #293d49;display:flex;align-items:center;flex-direction:column;gap:13px;padding:16px 10px}
-.rail-logo,.rail-item{width:48px;height:48px;border-radius:17px;background:#233743;display:flex;align-items:center;justify-content:center;font-size:1.4rem;color:#beded9;text-decoration:none;font-weight:800;transition:background .15s}
-.rail-logo{background:#92d6bd;color:#132831}.rail-item.active,.rail-item:hover{background:#305b57;color:#dfffee}
-.rail-bottom{margin-top:auto;writing-mode:vertical-rl;color:#7b919e;font-size:.7rem;letter-spacing:.08em}
-.workspace nav.panel{padding:17px}.nav-heading{font-size:1rem;text-transform:uppercase;letter-spacing:.13em;color:#86bba9}
-nav button{background:#222e3d;color:#d0dce8;border-radius:9px;font-weight:500}
-nav button.selected{background:#305e58;color:#fff}
-.channel-header{display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid #354657;padding-bottom:18px;margin-bottom:12px}
-.channel-header h2{margin:8px 0 0;font-size:1.3rem}
-.channel-eyebrow{color:#87baaa;font-size:.7rem;font-weight:700;letter-spacing:.15em}
-.channel-header-badge{color:#b5dccf;background:#213e3e;border:1px solid #36665c;border-radius:20px;padding:8px 12px;font-size:.75rem}
-.chat-panel{background:#13202d;min-height:610px}
-#messages{max-height:62vh}#messages article{border-color:#273d47}#messages article strong{color:#b4e1d1}#messages article p{margin:7px 0}
-#send-encrypted-form{border-top:1px solid #32434f;padding-top:15px;margin-top:auto}
-#send-encrypted-button{background:#8fd6bc}
-.account-panel{margin:10px 0}.account-panel summary{cursor:pointer;color:#bce4d7;font-size:1rem;font-weight:700}
-.workspace-header{border-radius:16px;background:#142331;border:1px solid #2a4050;padding:16px 20px}
-.warning{margin:12px 0;background:#332b26;border:1px solid #725744}
-@media(max-width:1050px){.shell.workspace{grid-template-columns:64px 210px minmax(0,1fr)}.server-rail{padding:10px 6px}.rail-item,.rail-logo{width:43px;height:43px}}
-@media(max-width:720px){.shell.workspace{grid-template-columns:58px minmax(0,1fr)}.shell.workspace nav.panel{grid-column:2;max-height:230px}.shell.workspace .chat-panel{grid-column:1/-1}.rail-bottom{display:none}main{padding:12px}}
-</style></head><body><main><h1>Nexora</h1><p class="muted">Your space. Your people. Your privacy.</p>
-<div class="warning"><strong>Developer preview — not secure chat.</strong> Cryptographic chat is an unreviewed single-device prototype. Group key sharing, identity verification and Discord bot compatibility are incomplete. Do not transmit confidential messages.</div>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexora</title>
+<!-- sri:head -->
+<link rel="stylesheet" href="/app.css" integrity="sha384-H9ePMWeh6ROSWyfmUFErDCX8R5scaFryKDcglzLYm79+ldwJCyozRfqHpttGqomH">
+<link rel="modulepreload" href="/crypto.mjs" integrity="sha384-oQEZ5ph6/zpHDZFM9BTC3BxA4JBFtiz7pqC8B41wiVF5LcZDDqaqqZ6z9EfRoIbt">
+<link rel="modulepreload" href="/private-key-vault.mjs" integrity="sha384-ycudg1x25UeTLiP73YqGH46FWm0+0iW9pVqNHb7dyU9VZ3aNQcuz5uihqXIIirF2">
+<link rel="modulepreload" href="/e2ee.mjs" integrity="sha384-/cz/gqrwKTOP+v/vzeliJwr2olyJO8+akLVk0HDUq/w95S6mThi8sdGaNp5j/ClE">
+<!-- /sri:head -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
 <p id="status" role="status" aria-live="polite"></p>
-<section id="logged-out" class="panel"><h2>Sign in or register</h2><form id="login-form">
-<label for="username">Username</label><input id="username" minlength="3" maxlength="32" autocomplete="username" required>
-<label for="password">Password (12+ characters)</label><input id="password" type="password" minlength="12" autocomplete="current-password" required>
-<label for="mfa-code">Authenticator code (if enabled)</label><input id="mfa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code"><label for="recovery-code">One-time recovery code (instead of authenticator code)</label><input id="recovery-code" autocomplete="one-time-code" maxlength="32" pattern="[a-f0-9]{32}" placeholder="32-character recovery code">
-<p><button type="submit" data-action="login">Sign in</button> <button type="button" id="register">Register</button></p></form></section>
-<section id="logged-in" class="hidden"><div class="workspace-nav"><a href="/">Nexora home</a><span class="muted">/</span><span>Channels</span></div><div class="workspace-header"><div><strong>Nexora Web</strong> <span class="muted">Signed in as <strong id="user"></strong></span></div><div class="workspace-controls"><span id="gateway-state" class="connection" role="status">Offline</span><button type="button" id="refresh-workspace">Refresh</button><button type="button" id="logout">Sign out</button></div></div><p class="preview-guide">Testing steps: create or join a community, create/open a channel, enroll and unlock your local device under Account security, then try the encrypted-message composer. Multi-member E2EE is not enabled.</p>
-<details class="panel account-panel" id="account-tools"><summary>Account security &amp; device keys</summary><h2>Account security</h2><p id="session-count" class="muted"></p><button id="logout-all" type="button">Sign out all devices</button>
-<h3>Encrypted device key vault (preview)</h3>
-<form id="device-enroll-form">
-<label for="device-name">Device label</label><input id="device-name" maxlength="80" required placeholder="My laptop">
-<label for="device-proof">Current account password</label><input id="device-proof" type="password" autocomplete="current-password" required minlength="12">
-<label for="device-vault-passphrase">Private-key vault passphrase (16+ characters)</label><input id="device-vault-passphrase" type="password" autocomplete="new-password" required minlength="16">
-<button type="submit">Create encrypted local device</button>
-</form>
-<form id="device-unlock-form"><label for="device-unlock-passphrase">Unlock local device vault</label><input id="device-unlock-passphrase" type="password" required><button type="submit">Verify local device</button></form>
-<p id="device-vault-status" class="muted">No device key unlocked.</p></details><br><details class="panel account-panel"><summary>My profile and linked accounts</summary><h2>My profile</h2><form id="profile-form"><label for="display-name">Display name</label><input id="display-name" maxlength="50"><label for="bio">Bio</label><input id="bio" maxlength="500"><p><button>Save profile</button></p></form><h3>Social links <small class="muted">(unverified)</small></h3><form id="social-form"><label for="provider">Provider</label><select id="provider"><option value="twitch">Twitch</option><option value="youtube">YouTube</option><option value="github">GitHub</option><option value="steam">Steam</option></select><label for="social-url">Profile URL</label><input id="social-url" type="url" placeholder="https://..." required><p><button>Save link</button></p></form><div id="social-links"></div></details><br><div class="shell workspace"><aside class="server-rail" aria-label="Workspace navigation"><a class="rail-logo" href="/" title="Nexora home">N</a><a class="rail-item active" href="/app" title="Chat">#</a><a class="rail-item" href="#account-tools" title="Account settings">⚙</a><div class="rail-bottom">Preview</div></aside><nav class="panel"><h2 class="nav-heading">Your servers</h2><div id="guilds"></div>
-<form id="create-guild"><label for="guild-name">New community</label><input id="guild-name" maxlength="100" required placeholder="Community name"><p><button>Create</button></p></form>
-<h3>Invite members</h3><button type="button" id="make-invite">Create invite</button><p id="invite-result" class="muted"></p><form id="join-form"><label for="invite-code">Join with invite code</label><input id="invite-code" autocomplete="off" maxlength="32" required><p><button>Join community</button></p></form><h3>Members</h3><div id="members"></div><h3>Text channels</h3><div id="channels"></div><form id="create-channel"><label for="channel-name">New channel (owner only)</label><input id="channel-name" maxlength="80" pattern="[a-z0-9_-]+" required placeholder="general-chat"><p><button>Create channel</button></p></form></nav>
-<section class="panel chat-panel"><header class="channel-header"><div><div class="channel-eyebrow">NEXORA / TEXT CHAT</div><h2 id="channel-title">Select a channel</h2></div><div class="channel-header-badge">Encrypted preview</div></header><p class="muted">Encrypted chat is available for single-device testing only. No verified multi-member key sharing.</p><div id="messages"></div><form id="send-encrypted-form"><label for="chat-plaintext">Encrypted message (single device preview)</label><textarea id="chat-plaintext" maxlength="4000"></textarea><button type="submit" id="send-encrypted-button">Encrypt and send</button></form></section></div></section>
-</main><script type="module" src="/app.js"></script></body></html>
+
+<!-- Sign in / register -->
+<section id="logged-out" class="auth">
+ <div class="auth-card">
+  <h1>Nexora</h1>
+  <p class="muted">Your space. Your people. Your privacy.</p>
+  <div class="warning"><strong>Developer preview — not audited.</strong> Cryptographic chat is an unreviewed prototype (trust-on-first-use device keys, no independent review). Do not transmit confidential messages.</div>
+  <form id="login-form">
+   <label for="username">Username</label>
+   <input id="username" minlength="3" maxlength="32" autocomplete="username" required pattern="[A-Za-z0-9_]+">
+   <label for="password">Password (12+ characters)</label>
+   <input id="password" type="password" minlength="12" autocomplete="current-password" required>
+   <details>
+    <summary>Two-factor authentication</summary>
+    <label for="mfa-code">Authenticator code</label>
+    <input id="mfa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code">
+    <label for="recovery-code">Or a one-time recovery code</label>
+    <input id="recovery-code" autocomplete="one-time-code" maxlength="32" pattern="[a-f0-9]{32}" placeholder="32-character recovery code">
+   </details>
+   <div class="actions"><button type="submit" data-action="login">Sign in</button><button type="button" id="register" class="secondary">Create account</button></div>
+   <div class="actions"><button type="button" id="passkey-login" class="secondary">🔑 Sign in with a passkey</button></div>
+  </form>
+  <p class="small muted"><a href="/">Back to the Nexora homepage</a></p>
+ </div>
+</section>
+
+<!-- Signed-in workspace: server rail · sidebar · chat · members -->
+<section id="logged-in" class="hidden">
+ <div class="shell workspace" id="shell">
+  <aside class="server-rail" aria-label="Servers">
+   <button type="button" class="rail-item home" id="home-button" title="Direct messages &amp; friends">✦</button>
+   <div class="rail-sep"></div>
+   <div id="guilds"></div>
+   <button type="button" class="rail-item add" id="add-server" title="Create or join a server">+</button>
+  </aside>
+
+  <nav class="sidebar" aria-label="Channels">
+   <header class="sidebar-header"><span id="sidebar-title">Direct messages</span><button type="button" class="ghost" id="guild-menu-button" title="Server menu">⌄</button></header>
+   <div class="sidebar-scroll" id="channels"></div>
+   <footer class="user-panel">
+    <div id="self-avatar"></div>
+    <div class="who"><strong id="user"></strong><span id="self-status">Online</span></div>
+    <button type="button" class="ghost" id="vault-button" title="Encryption device">🔒</button>
+    <button type="button" class="ghost" id="settings-button" title="User settings">⚙</button>
+   </footer>
+  </nav>
+
+  <main class="chat">
+   <header class="channel-header">
+    <button type="button" class="ghost mobile-only" id="toggle-sidebar">☰</button>
+    <h2 id="channel-title">Friends</h2>
+    <span class="topic" id="channel-topic"></span>
+    <span class="spacer"></span>
+    <span id="e2ee-state" class="pill">E2EE</span>
+    <span id="gateway-state" class="connection" role="status">Offline</span>
+    <button type="button" class="ghost" id="pins-button" title="Pinned messages">📌</button>
+    <button type="button" class="ghost" id="members-button" title="Member list">👥</button>
+    <button type="button" class="ghost" id="refresh-workspace" title="Refresh">⟳</button>
+   </header>
+   <div id="friends-view" class="friends"></div>
+   <div id="chat-view" class="hidden">
+    <div id="messages" aria-live="polite"></div>
+   </div>
+   <div class="typing" id="typing"></div>
+   <div class="composer hidden" id="composer">
+    <form id="send-encrypted-form">
+     <div class="context-bar hidden" id="composer-context"><span id="composer-context-text"></span><span class="spacer"></span><button type="button" class="ghost" id="composer-cancel">✕</button></div>
+     <div class="lock-note hidden" id="composer-lock"></div>
+     <div class="input-row">
+      <button type="button" class="ghost" id="emoji-button" title="Emoji">☺</button>
+      <label for="chat-plaintext" class="hidden">Message</label>
+      <textarea id="chat-plaintext" maxlength="4000" rows="1" placeholder="Message"></textarea>
+      <button type="submit" id="send-encrypted-button">Send</button>
+     </div>
+    </form>
+   </div>
+  </main>
+
+  <aside class="members" id="members" aria-label="Members"></aside>
+ </div>
+</section>
+
+<!-- Static settings sections, moved into the settings modal by app.js -->
+<div class="hidden" id="settings-templates">
+ <section id="settings-encryption">
+  <h2>Encryption &amp; devices</h2>
+  <p class="muted">Messages are encrypted in this browser before upload. Your private device keys are kept in an encrypted vault in this browser and never leave it. Device identities are trusted on first use — compare safety numbers with people you talk to.</p>
+  <p id="device-vault-status" class="muted">No device key unlocked.</p>
+  <form id="device-unlock-form">
+   <label for="device-unlock-passphrase">Unlock this browser's device vault</label>
+   <div class="row"><input id="device-unlock-passphrase" type="password" required autocomplete="current-password"><button type="submit">Unlock</button></div>
+  </form>
+  <h3>Set up this browser as a new device</h3>
+  <form id="device-enroll-form">
+   <label for="device-name">Device label</label>
+   <input id="device-name" maxlength="80" required placeholder="My laptop">
+   <label for="device-proof">Current account password</label>
+   <input id="device-proof" type="password" autocomplete="current-password" required minlength="12">
+   <label for="device-vault-passphrase">New vault passphrase (16+ characters, not your account password)</label>
+   <input id="device-vault-passphrase" type="password" autocomplete="new-password" required minlength="16">
+   <div class="actions"><button type="submit">Create encrypted device</button></div>
+  </form>
+  <h3>Key backup</h3>
+  <p id="backup-status" class="muted">Unlock this device to manage key backup.</p>
+  <div class="row wrap"><button type="button" id="backup-setup">Turn on key backup</button><button type="button" id="backup-restore" class="secondary">Restore from recovery key</button></div>
+  <h3>Your devices</h3>
+  <p class="small muted">A new device must be approved from one of your existing devices before other people's clients share keys with it.</p>
+  <div id="device-list"></div>
+ </section>
+</div>
+<div id="toasts"></div>
+<script type="module" src="/app.js" integrity="sha384-ppU3LgUMWiE5iuirxIwLCY/vRwYscypS9YCeSAP+opB5X6byo1oPQySmoLC42R7K"></script>
+</body>
+</html>

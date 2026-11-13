@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 test("developer client warns that E2EE is not implemented", async () => {
   const html = await readFile(new URL("../apps/web/index.html", import.meta.url), "utf8");
-  assert.match(html, /Cryptographic chat is an unreviewed single-device prototype/);
+  assert.match(html, /Cryptographic chat is an unreviewed prototype/);
   assert.match(html, /Do not transmit confidential messages/);
 });
 test("the frontend never sends plaintext message content", async () => {

@@ -1,0 +1,3 @@
+# Web client assets are integrity-pinned (scripts/sri.mjs): bytes must be identical on every OS.
+apps/web/** text eol=lf
+*.sh text eol=lf

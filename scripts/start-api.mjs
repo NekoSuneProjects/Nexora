@@ -12,7 +12,7 @@ async function migrate(){
   // All schema DDL is idempotent; never drop the database or its volume.
   await client.query(await readFile("database/schema.sql","utf8"));
   await client.query("CREATE TABLE IF NOT EXISTS schema_migrations(version text PRIMARY KEY,applied_at timestamptz DEFAULT now(),checksum text NOT NULL)");
-  const files=(await readdir("database/migrations")).filter(f=>/^\\d{4}_[a-z0-9_]+\\.sql$/.test(f)).sort();
+  const files=(await readdir("database/migrations")).filter(f=>/^\d{4}_[a-z0-9_]+\.sql$/.test(f)).sort();
   for(const filename of files){
    const version=filename.slice(0,-4);
    const sql=await readFile(join("database/migrations",filename),"utf8");

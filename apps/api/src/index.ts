@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { registerCommunity, guildAccess, channelAccess, bundleFingerprint, PRESENCE_SQL } from "./community.js";
+import { Permissions, DEFAULT_PERMISSIONS, has } from "./permissions.js";
+import { registerSecurity } from "./security.js";
 
 const scrypt = promisify(scryptCallback);
 const app = Fastify({
@@ -35,7 +38,7 @@ app.addHook("onSend",async(_request,reply,payload)=>{
  reply.header("Referrer-Policy","no-referrer");
  reply.header("X-Frame-Options","DENY");
  reply.header("Permissions-Policy","camera=(), microphone=(), geolocation=()");
- reply.header("Content-Security-Policy","default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+ reply.header("Content-Security-Policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
  reply.header("Cache-Control","no-store");
  return payload;
 });
@@ -64,7 +67,7 @@ async function auth(header?: string): Promise<Identity | null> {
   const match = /^Bearer ([a-f0-9]{64})$/.exec(header ?? "");
   if (!match) return null;
   const r = await db.query<Identity>(
-    "SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()",
+    "SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.suspended_at IS NULL",
     [hashToken(match[1])]
   );
   return r.rows[0] ?? null;
@@ -126,11 +129,70 @@ function evictMemberSockets(userId:string,channelIds:string[]){
 }
 // PostgreSQL notification bus: every API instance must LISTEN to the same database.
 const eventsClient=await db.connect();
-async function publishSecurityEvent(payload:Record<string,string>){
- await db.query("WITH e AS (INSERT INTO security_events(payload) VALUES($1::jsonb) RETURNING payload) SELECT pg_notify('nexora_security',payload::text) FROM e",[JSON.stringify(payload)]);
+async function publishSecurityEvent(payload:Record<string,unknown>){
+ // The persisted row ID travels with the notification so the catch-up loop does not redeliver it.
+ await db.query("WITH e AS (INSERT INTO security_events(payload) VALUES($1::jsonb) RETURNING id,payload) SELECT pg_notify('nexora_security',(payload||jsonb_build_object('_id',id::text))::text) FROM e",[JSON.stringify(payload)]);
+}
+// Ephemeral events (typing, presence) are NOT persisted: losing one is harmless.
+async function publishEphemeral(payload:Record<string,unknown>){
+ const text=JSON.stringify(payload);
+ if(text.length>7000)throw Error("Ephemeral event too large");
+ await db.query("SELECT pg_notify('nexora_security',$1)",[text]);
+}
+const deliveredEvents=new Set<string>();
+function rememberDelivered(id:string){deliveredEvents.add(id);if(deliveredEvents.size>5000){const first=deliveredEvents.values().next().value;if(first!==undefined)deliveredEvents.delete(first)}}
+function sendToUser(userId:string,packet:string){
+ for(const socket of userConnections.get(userId)??[])if(socket.readyState===1)socket.send(packet);
+}
+const userTyping=new Map<string,number>();
+async function processDispatch(event:any){
+ if(typeof event.t!=="string"||!/^[A-Z_]{3,40}$/.test(event.t))return;
+ const packet=JSON.stringify({op:0,t:event.t,s:null,d:event.d&&typeof event.d==="object"?event.d:{}});
+ if(uuid.safeParse(event.channel).success){
+  // Channel-scoped metadata (reactions, pins) is delivered only to live, authorized subscribers.
+  for(const socket of sockets.get(event.channel)??[]){
+   const user=socketIdentity.get(socket);
+   if(socket.readyState!==1||!user)continue;
+   if(await member(user,event.channel))socket.send(packet);
+  }
+  return;
+ }
+ let targets:string[]=[];
+ if(uuid.safeParse(event.guild).success)targets=(await db.query("SELECT user_id FROM guild_members WHERE guild_id=$1",[event.guild])).rows.map((r:{user_id:string})=>r.user_id);
+ else if(Array.isArray(event.users))targets=event.users.filter((u:unknown)=>uuid.safeParse(u).success);
+ for(const user of targets)sendToUser(user,packet);
+}
+async function presenceAudience(userId:string){
+ const r=await db.query("SELECT DISTINCT peer.user_id FROM guild_members gm JOIN guild_members peer ON peer.guild_id=gm.guild_id WHERE gm.user_id=$1 UNION SELECT target_id FROM user_relationships WHERE user_id=$1 AND status='friend'",[userId]);
+ return r.rows.map((x:{user_id:string})=>x.user_id);
 }
 async function processSecurityEvent(event:any){
  if(!event||typeof event!=="object")return;
+ if(event.kind==="dispatch"){await processDispatch(event);return}
+ if(event.kind==="typing"&&uuid.safeParse(event.channel).success&&uuid.safeParse(event.user).success){
+  const packet=JSON.stringify({op:0,t:"TYPING_START",s:null,d:{channel_id:event.channel,user_id:event.user,username:String(event.username??"").slice(0,32)}});
+  for(const socket of sockets.get(event.channel)??[])if(socket.readyState===1&&socketIdentity.get(socket)!==event.user)socket.send(packet);
+  return;
+ }
+ if(event.kind==="presence"&&uuid.safeParse(event.user).success){
+  const r=await db.query(`SELECT ${PRESENCE_SQL} AS presence,COALESCE(up.custom_status,'') AS custom_status FROM users u LEFT JOIN user_profiles up ON up.user_id=u.id LEFT JOIN user_presence pr ON pr.user_id=u.id WHERE u.id=$1`,[event.user]);
+  if(!r.rowCount)return;
+  const status=event.offline===true&&!userConnections.has(event.user)?"offline":r.rows[0].presence;
+  const packet=JSON.stringify({op:0,t:"PRESENCE_UPDATE",s:null,d:{user_id:event.user,status,custom_status:r.rows[0].custom_status}});
+  const audience=await presenceAudience(event.user);
+  for(const user of audience)if(userConnections.has(user))sendToUser(user,packet);
+  return;
+ }
+ if(event.kind==="message_updated"&&uuid.safeParse(event.message).success&&uuid.safeParse(event.channel).success){
+  const found=await db.query("SELECT id,channel_id,author_id,ciphertext,algorithm,created_at,edited_at FROM messages WHERE id=$1 AND channel_id=$2",[event.message,event.channel]);
+  if(!found.rowCount)return;
+  const packet=JSON.stringify({op:0,t:"MESSAGE_UPDATE",s:null,d:found.rows[0]});
+  for(const socket of sockets.get(event.channel)??[]){
+   const user=socketIdentity.get(socket);
+   if(socket.readyState===1&&user&&await member(user,event.channel))socket.send(packet);
+  }
+  return;
+ }
  if(event.kind==="session"&&uuid.safeParse(event.user).success)closeUserConnections(event.user,event.hash);
  if(event.kind==="bot"&&uuid.safeParse(event.app).success)closeBotConnections(event.app);
  if(event.kind==="bot_uninstall"&&uuid.safeParse(event.app).success&&uuid.safeParse(event.guild).success){
@@ -142,6 +204,9 @@ async function processSecurityEvent(event:any){
   if(!botSockets.get(event.guild)?.size)botSockets.delete(event.guild);
  }
  if(event.kind==="member"&&uuid.safeParse(event.user).success&&uuid.safeParse(event.guild).success){
+  // A replayed removal must not evict someone who has since rejoined.
+  const rejoined=await db.query("SELECT 1 FROM guild_members WHERE guild_id=$1 AND user_id=$2",[event.guild,event.user]);
+  if(rejoined.rowCount)return;
   const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[event.guild]);
   evictMemberSockets(event.user,channels.rows.map((r:{id:string})=>r.id));
  }
@@ -155,7 +220,7 @@ async function processSecurityEvent(event:any){
   }
  }
  if(event.kind==="message"&&uuid.safeParse(event.message).success&&uuid.safeParse(event.channel).success){
-  const found=await db.query("SELECT m.id,m.channel_id,m.author_id,m.ciphertext,m.algorithm,m.created_at FROM messages m WHERE m.id=$1 AND m.channel_id=$2",[event.message,event.channel]);
+  const found=await db.query("SELECT m.id,m.channel_id,m.author_id,u.username AS author_username,m.ciphertext,m.algorithm,m.created_at,m.edited_at,m.reply_to,'[]'::json AS reactions,false AS pinned FROM messages m LEFT JOIN users u ON u.id=m.author_id WHERE m.id=$1 AND m.channel_id=$2",[event.message,event.channel]);
   if(!found.rowCount)return;
   const row=found.rows[0];
   // Revalidate session and guild membership for each recipient at delivery time.
@@ -171,7 +236,11 @@ async function processSecurityEvent(event:any){
 }
 eventsClient.on("notification",msg=>{
  if(msg.channel!=="nexora_security"||!msg.payload)return;
- try{void processSecurityEvent(JSON.parse(msg.payload)).catch(error=>app.log.error(error))}
+ try{
+  const event=JSON.parse(msg.payload);
+  if(typeof event?._id==="string"){if(deliveredEvents.has(event._id))return;rememberDelivered(event._id)}
+  void processSecurityEvent(event).catch(error=>app.log.error(error));
+ }
  catch(error){app.log.warn(error)}
 });
 eventsClient.on("error",error=>{app.log.error(error);process.exitCode=1;void app.close()});
@@ -191,7 +260,8 @@ const catchUpSecurityEvents=async()=>{
    const found=await db.query("SELECT id::text AS id,payload FROM security_events WHERE id>$1 ORDER BY id LIMIT 200",[securityCursor.toString()]);
    if(!found.rows.length)break;
    for(const record of found.rows){
-    await processSecurityEvent(record.payload);
+    // Skip events already delivered through LISTEN/NOTIFY; replay only the gaps.
+    if(!deliveredEvents.has(record.id)){rememberDelivered(record.id);await processSecurityEvent(record.payload)}
     securityCursor=BigInt(record.id);
    }
   }
@@ -204,17 +274,28 @@ app.addHook("onClose",async()=>clearInterval(catchUpInterval));
 
 await app.register(websocket);
 app.get("/health", async () => ({ status: "ok", service: "nexora" }));
-const frontend = fileURLToPath(new URL("../../../web/index.html", import.meta.url));
-const frontendJs = fileURLToPath(new URL("../../../web/app.js", import.meta.url));
-const homepage=fileURLToPath(new URL("../../../web/home.html",import.meta.url));
+const frontend = fileURLToPath(new URL("../../web/index.html", import.meta.url));
+const frontendJs = fileURLToPath(new URL("../../web/app.js", import.meta.url));
+const homepage=fileURLToPath(new URL("../../web/home.html",import.meta.url));
 app.get("/",async(_request,reply)=>reply.type("text/html; charset=utf-8").send(await readFile(homepage)));
 app.get("/app",async(_request,reply)=>reply.type("text/html; charset=utf-8").send(await readFile(frontend)));
 app.get("/app/channels/:guildId/:channelId",async(_request,reply)=>reply.type("text/html; charset=utf-8").send(await readFile(frontend)));
 app.get("/app.js", async (_request, reply) => reply.header("Cache-Control", "no-store").type("application/javascript").send(await readFile(frontendJs)));
-const cryptoJs=fileURLToPath(new URL("../../../web/crypto.mjs",import.meta.url));
-const vaultJs=fileURLToPath(new URL("../../../web/private-key-vault.mjs",import.meta.url));
+const cryptoJs=fileURLToPath(new URL("../../web/crypto.mjs",import.meta.url));
+const vaultJs=fileURLToPath(new URL("../../web/private-key-vault.mjs",import.meta.url));
 app.get("/crypto.mjs",async(_request,reply)=>reply.type("application/javascript").send(await readFile(cryptoJs)));
 app.get("/private-key-vault.mjs",async(_request,reply)=>reply.type("application/javascript").send(await readFile(vaultJs)));
+// Static client assets: fixed file names only, never request-derived paths.
+const staticAssets:Record<string,[string,string]>={
+ "/e2ee.mjs":["../../web/e2ee.mjs","application/javascript"],
+ "/app.css":["../../web/app.css","text/css; charset=utf-8"],
+ "/home.css":["../../web/home.css","text/css; charset=utf-8"],
+ "/favicon.svg":["../../web/favicon.svg","image/svg+xml"]
+};
+for(const [route,[file,type]] of Object.entries(staticAssets)){
+ const path=fileURLToPath(new URL(file,import.meta.url));
+ app.get(route,async(_request,reply)=>reply.type(type).send(await readFile(path)));
+}
 app.get("/api/v10/gateway", async (request) => {
   const host = request.headers.host ?? "localhost:3000";
   // Only use forwarded proto if an administrator has configured a trusted proxy.
@@ -301,12 +382,14 @@ app.post("/api/v1/auth/login", async (request, reply) => {
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
   if(!await takeQuota("login:"+request.ip+":"+username.toLowerCase(),7,900))
    return reply.code(429).header("Retry-After","900").send({error:"Too many login attempts; try again later"});
-  const r = await db.query("SELECT id,password_hash,password_salt FROM users WHERE username=$1", [username]);
+  const r = await db.query("SELECT id,password_hash,password_salt,suspended_at FROM users WHERE username=$1", [username]);
   const record = r.rows[0];
   // Avoid a fast unknown-user path and never leak which usernames exist.
   const hash = await passwordHash(password, record?.password_salt ?? "00000000000000000000000000000000");
   const a = Buffer.from(hash,"hex"), b = Buffer.from(record?.password_hash ?? "00".repeat(64),"hex");
   if (!record || !timingSafeEqual(a,b)) return reply.code(401).send({ error: "Invalid credentials" });
+  // Only revealed after a correct password, so suspension status does not leak to guessers.
+  if (record.suspended_at) return reply.code(403).send({ error: "Account suspended" });
 
   let recovered=false;
   const mfa=await db.query("SELECT secret_enc FROM user_mfa WHERE user_id=$1 AND enabled=true",[record.id]);
@@ -358,6 +441,28 @@ app.post("/api/v1/auth/logout-all",async(request,reply)=>{
 });
 
 
+// Password change: proof of the current password, then every OTHER session is revoked
+// (the sessions trigger notifies all API instances, closing their Gateway sockets).
+app.post("/api/v1/auth/password",async(request,reply)=>{
+ const raw=/^Bearer ([a-f0-9]{64})$/.exec(request.headers.authorization ?? "");
+ const user=await auth(request.headers.authorization);
+ if(!user||!raw)return reply.code(401).send({message:"Unauthorized"});
+ const input=z.object({current_password:z.string().min(12).max(256),new_password:z.string().min(12).max(256)}).safeParse(request.body);
+ if(!input.success)return reply.code(400).send({message:"New password must be 12–256 characters"});
+ if(input.data.current_password===input.data.new_password)return reply.code(400).send({message:"Choose a different password"});
+ if(!await takeQuota("password-change:"+user.id,6,900))return reply.code(429).header("Retry-After","900").send({message:"Too many attempts"});
+ const owner=await db.query("SELECT password_salt,password_hash FROM users WHERE id=$1",[user.id]);
+ if(!owner.rowCount)return reply.code(401).send({message:"Unauthorized"});
+ const proof=Buffer.from(await passwordHash(input.data.current_password,owner.rows[0].password_salt),"hex");
+ const expected=Buffer.from(owner.rows[0].password_hash,"hex");
+ if(proof.length!==expected.length||!timingSafeEqual(proof,expected))return reply.code(401).send({message:"Current password is incorrect"});
+ const salt=randomBytes(16).toString("hex");
+ const hashed=await passwordHash(input.data.new_password,salt);
+ await db.query("UPDATE users SET password_salt=$2,password_hash=$3 WHERE id=$1",[user.id,salt,hashed]);
+ await db.query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2",[user.id,hashToken(raw[1])]);
+ return reply.code(204).send();
+});
+
 const deviceInput=z.object({name:z.string().trim().min(1).max(80),identity_key:z.string().regex(/^[A-Za-z0-9_-]{43}$/)});
 app.post("/api/v1/devices",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
@@ -373,16 +478,20 @@ app.post("/api/v1/devices",async(request,reply)=>{
  const proof=Buffer.from(await passwordHash(password.data.password,owner.rows[0].password_salt),"hex");
  const expected=Buffer.from(owner.rows[0].password_hash,"hex");
  if(proof.length!==expected.length||!timingSafeEqual(proof,expected))return reply.code(401).send({message:"Invalid password"});
+ const rawBundle=(request.body as any)?.public_bundle;
+ if(rawBundle!==undefined&&bundleFingerprint(rawBundle)!==data.data.identity_key)return reply.code(400).send({message:"Public bundle does not match identity fingerprint"});
  const id=randomUUID();
  try {
-  const result=await db.query("INSERT INTO user_devices(id,user_id,name,identity_key) VALUES($1,$2,$3,$4) RETURNING id,name,identity_key,created_at",[id,user.id,data.data.name,data.data.identity_key]);
+  const result=await db.query("INSERT INTO user_devices(id,user_id,name,identity_key,public_bundle) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING id,name,identity_key,created_at",[id,user.id,data.data.name,data.data.identity_key,rawBundle===undefined?null:JSON.stringify(rawBundle)]);
+  // Existing devices of this account are prompted to approve (cross-sign) the new one.
+  await publishSecurityEvent({kind:"dispatch",users:[user.id],t:"DEVICE_ADDED",d:{device_id:id,name:data.data.name}});
   return reply.code(201).send(result.rows[0]);
  }catch(e:any){if(e.code==="23505")return reply.code(409).send({message:"Key already registered"});throw e}
 });
 app.get("/api/v1/devices",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
- const result=await db.query("SELECT id,name,identity_key,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[user.id]);
+ const result=await db.query("SELECT id,name,identity_key,created_at,public_bundle,attestation,public_bundle IS NOT NULL AS has_bundle FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[user.id]);
  return result.rows;
 });
 app.get("/api/v1/users/:id/devices",async(request,reply)=>{
@@ -394,7 +503,7 @@ app.get("/api/v1/users/:id/devices",async(request,reply)=>{
  // Reveal another user's device keys only within a currently shared community.
  const shared=await db.query("SELECT 1 FROM guild_members gm JOIN guild_members peer ON peer.guild_id=gm.guild_id WHERE gm.user_id=$1 AND peer.user_id=$2 LIMIT 1",[user.id,id]);
  if(user.id!==id&&!shared.rowCount)return reply.code(403).send({message:"No shared community"});
- const result=await db.query("SELECT id,identity_key,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[id]);
+ const result=await db.query("SELECT id,user_id,identity_key,public_bundle,attestation,created_at FROM user_devices WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at",[id]);
  return result.rows;
 });
 app.delete("/api/v1/devices/:id",async(request,reply)=>{
@@ -543,7 +652,9 @@ app.get("/api/v1/bots/guilds/:id/events",async(request,reply)=>{
 
 app.get("/api/v10/users/@me", async (request, reply) => {
   const user = await auth(request.headers.authorization);
-  return user ?? reply.code(401).send({ message: "401: Unauthorized", code: 0 });
+  if(!user)return reply.code(401).send({ message: "401: Unauthorized", code: 0 });
+  const extra=await db.query("SELECT is_admin FROM users WHERE id=$1",[user.id]);
+  return {...user,is_admin:extra.rows[0]?.is_admin===true};
 });
 
 const profileInput=z.object({ display_name:z.string().trim().max(50),bio:z.string().trim().max(500) });
@@ -602,6 +713,7 @@ app.post("/api/v10/guilds", async (request, reply) => {
     await client.query("INSERT INTO guilds(id,name,owner_id) VALUES ($1,$2,$3)",[id,data.data.name,user.id]);
     await client.query("INSERT INTO guild_members(guild_id,user_id) VALUES ($1,$2)",[id,user.id]);
     await client.query("INSERT INTO channels(id,guild_id,name) VALUES ($1,$2,'general')",[channelId,id]);
+    await client.query("INSERT INTO guild_roles(id,guild_id,name,permissions,position,is_default) VALUES($1,$1,'@everyone',$2::bigint,0,true)",[id,DEFAULT_PERMISSIONS.toString()]);
     await client.query("COMMIT");
     return reply.code(201).send({ id, name: data.data.name, owner_id: user.id, channels: [{ id: channelId, name:"general" }] });
   } catch (err) { await client.query("ROLLBACK"); throw err; }
@@ -616,13 +728,14 @@ app.post("/api/v1/guilds/:id/invites",async(request,reply)=>{
   if(!uuid.safeParse(id).success) return reply.code(400).send({message:"Invalid guild"});
   const options=inviteOptions.safeParse(request.body ?? {});
   if(!options.success) return reply.code(400).send({message:"Invalid invite options"});
-  // Owner-only during this milestone; future permission roles must be checked here.
-  const owner=await db.query("SELECT 1 FROM guilds WHERE id=$1 AND owner_id=$2",[id,user.id]);
-  if(!owner.rowCount) return reply.code(403).send({message:"Only the community owner may invite"});
+  // Role-based: CREATE_INVITE (granted to @everyone by default, owners always). Never for DMs.
+  const access=await guildAccess(db,id,user.id);
+  if(!access||access.kind!=="community"||!has(access.perms,Permissions.CREATE_INVITE)) return reply.code(403).send({message:"Missing CREATE_INVITE permission"});
   const code=randomBytes(24).toString("base64url");
   const expires=new Date(Date.now()+options.data.expires_hours*3600000);
-  await db.query("INSERT INTO guild_invites(code_hash,guild_id,created_by,expires_at,max_uses) VALUES($1,$2,$3,$4,$5)",
-   [hashToken(code),id,user.id,expires,options.data.max_uses]);
+  await db.query("INSERT INTO guild_invites(code_hash,guild_id,created_by,expires_at,max_uses,code_hint) VALUES($1,$2,$3,$4,$5,$6)",
+   [hashToken(code),id,user.id,expires,options.data.max_uses,code.slice(0,4)]);
+  await db.query("INSERT INTO guild_audit_log(guild_id,actor_id,action,target_id,details) VALUES($1,$2,'invite.create',$3,$4::jsonb)",[id,user.id,hashToken(code).slice(0,16),JSON.stringify({max_uses:options.data.max_uses,expires_hours:options.data.expires_hours})]);
   return reply.code(201).send({code,expires_at:expires.toISOString(),max_uses:options.data.max_uses});
 });
 app.post("/api/v1/invites/:code/join",async(request,reply)=>{
@@ -639,9 +752,15 @@ app.post("/api/v1/invites/:code/join",async(request,reply)=>{
     const result=await client.query("SELECT guild_id,uses,max_uses FROM guild_invites WHERE code_hash=$1 AND expires_at>now() AND uses<max_uses FOR UPDATE",[hashToken(code)]);
     const invite=result.rows[0];
     if(!invite){await client.query("ROLLBACK");return reply.code(404).send({message:"Invite expired or unavailable"})}
+    const banned=await client.query("SELECT 1 FROM guild_bans WHERE guild_id=$1 AND user_id=$2",[invite.guild_id,user.id]);
+    if(banned.rowCount){await client.query("ROLLBACK");return reply.code(403).send({message:"You are banned from this community"})}
     const joined=await client.query("INSERT INTO guild_members(guild_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING user_id",[invite.guild_id,user.id]);
     if(joined.rowCount) await client.query("UPDATE guild_invites SET uses=uses+1 WHERE code_hash=$1",[hashToken(code)]);
     await client.query("COMMIT");
+    if(joined.rowCount){
+     await publishSecurityEvent({kind:"dispatch",guild:invite.guild_id,t:"GUILD_MEMBER_ADD",d:{guild_id:invite.guild_id,user_id:user.id,username:user.username}});
+     await publishSecurityEvent({kind:"dispatch",users:[user.id],t:"GUILD_CREATE",d:{id:invite.guild_id}});
+    }
     return {guild_id:invite.guild_id,already_member:!joined.rowCount};
   } catch(e){await client.query("ROLLBACK");throw e}
   finally{client.release()}
@@ -650,33 +769,48 @@ app.post("/api/v1/invites/:code/join",async(request,reply)=>{
 app.get("/api/v10/users/@me/guilds", async (request, reply) => {
   const user = await auth(request.headers.authorization);
   if (!user) return reply.code(401).send({ message:"Unauthorized" });
-  const r=await db.query("SELECT g.id,g.name,g.owner_id FROM guilds g JOIN guild_members gm ON gm.guild_id=g.id WHERE gm.user_id=$1",[user.id]);
+  const r=await db.query("SELECT g.id,g.name,g.owner_id,g.description FROM guilds g JOIN guild_members gm ON gm.guild_id=g.id WHERE gm.user_id=$1 AND g.kind='community' ORDER BY gm.joined_at,g.created_at",[user.id]);
   return r.rows;
 });
 
 const channelInput=z.object({name:z.string().trim().min(1).max(80).regex(/^[a-z0-9_-]+$/)});
+const channelExtras=z.object({kind:z.enum(["encrypted_text","announcement","category"]).default("encrypted_text"),topic:z.string().trim().max(1024).default(""),parent_id:z.string().uuid().nullable().optional()});
+const channelColumns="id,guild_id,name,kind,topic,position,parent_id";
 app.post("/api/v1/guilds/:id/channels", async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const id=(request.params as {id:string}).id;
  if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid community ID"});
- const data=channelInput.safeParse(request.body);
+ const data=channelInput.merge(channelExtras).safeParse(request.body);
  if(!data.success)return reply.code(400).send({message:"Channel names must be 1–80 lowercase letters, digits, - or _"});
- const owner=await db.query("SELECT 1 FROM guilds WHERE id=$1 AND owner_id=$2",[id,user.id]);
- if(!owner.rowCount)return reply.code(403).send({message:"Only community owners can create channels"});
+ const access=await guildAccess(db,id,user.id);
+ if(!access||access.kind!=="community"||!has(access.perms,Permissions.MANAGE_CHANNELS))return reply.code(403).send({message:"Missing MANAGE_CHANNELS permission"});
+ const count=await db.query("SELECT count(*)::int AS n,COALESCE(max(position),0)+1 AS next FROM channels WHERE guild_id=$1",[id]);
+ if(count.rows[0].n>=500)return reply.code(409).send({message:"Channel limit reached"});
+ const parent=data.data.kind==="category"?null:(data.data.parent_id??null);
  const channelId=randomUUID();
- const result=await db.query("INSERT INTO channels(id,guild_id,name) VALUES ($1,$2,$3) RETURNING id,guild_id,name,kind",[channelId,id,data.data.name]);
+ // Parent must be a category in the same community, verified inside the INSERT.
+ const result=await db.query("INSERT INTO channels(id,guild_id,name,kind,topic,position,parent_id) SELECT $1,$2,$3,$4,$5,$6,$7::uuid WHERE $7::uuid IS NULL OR EXISTS(SELECT 1 FROM channels WHERE id=$7 AND guild_id=$2 AND kind='category') RETURNING "+channelColumns,[channelId,id,data.data.name,data.data.kind,data.data.topic,count.rows[0].next,parent]);
+ if(!result.rowCount)return reply.code(400).send({message:"Parent must be a category in this community"});
+ await db.query("INSERT INTO guild_audit_log(guild_id,actor_id,action,target_id,details) VALUES($1,$2,'channel.create',$3,$4::jsonb)",[id,user.id,channelId,JSON.stringify({name:data.data.name,kind:data.data.kind})]);
+ await publishSecurityEvent({kind:"dispatch",guild:id,t:"CHANNEL_CREATE",d:result.rows[0]});
  return reply.code(201).send(result.rows[0]);
 });
+const channelPatch=channelInput.partial().extend({topic:z.string().trim().max(1024).optional()}).refine(v=>v.name!==undefined||v.topic!==undefined,"Nothing to update");
 app.patch("/api/v1/channels/:id", async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const id=(request.params as {id:string}).id;
  if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid channel ID"});
- const data=channelInput.safeParse(request.body);
+ const data=channelPatch.safeParse(request.body);
  if(!data.success)return reply.code(400).send({message:"Invalid channel name"});
- const result=await db.query("UPDATE channels c SET name=$1 FROM guilds g WHERE c.id=$2 AND g.id=c.guild_id AND g.owner_id=$3 RETURNING c.id,c.guild_id,c.name,c.kind",[data.data.name,id,user.id]);
- if(!result.rowCount)return reply.code(403).send({message:"Only community owners can rename channels"});
+ const access=await channelAccess(db,id,user.id);
+ if(!access||access.kind!=="community"||!has(access.perms,Permissions.MANAGE_CHANNELS))return reply.code(403).send({message:"Missing MANAGE_CHANNELS permission"});
+ // Guild scope is re-checked in the UPDATE itself.
+ const result=await db.query("UPDATE channels c SET name=COALESCE($1,c.name),topic=COALESCE($4,c.topic) FROM guilds g WHERE c.id=$2 AND g.id=c.guild_id AND g.id=$3 AND g.kind='community' RETURNING c.id,c.guild_id,c.name,c.kind,c.topic,c.position,c.parent_id",[data.data.name??null,id,access.guildId,data.data.topic??null]);
+ if(!result.rowCount)return reply.code(403).send({message:"Missing MANAGE_CHANNELS permission"});
+ await db.query("INSERT INTO guild_audit_log(guild_id,actor_id,action,target_id,details) VALUES($1,$2,'channel.update',$3,$4::jsonb)",[access.guildId,user.id,id,JSON.stringify(data.data)]);
+ await publishSecurityEvent({kind:"dispatch",guild:access.guildId,t:"CHANNEL_UPDATE",d:result.rows[0]});
  return result.rows[0];
 });
 
@@ -688,7 +822,7 @@ app.get("/api/v1/guilds/:id/members",async(request,reply)=>{
  if(!uuid.safeParse(id).success)return reply.code(400).send({message:"Invalid community ID"});
  const memberCheck=await db.query("SELECT 1 FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,user.id]);
  if(!memberCheck.rowCount)return reply.code(403).send({message:"Not a member"});
- const result=await db.query("SELECT u.id,u.username FROM users u JOIN guild_members gm ON gm.user_id=u.id WHERE gm.guild_id=$1 ORDER BY u.username LIMIT 500",[id]);
+ const result=await db.query(`SELECT u.id,u.username,gm.nickname,gm.joined_at,COALESCE(up.display_name,'') AS display_name,COALESCE(up.custom_status,'') AS custom_status,${PRESENCE_SQL} AS presence,COALESCE((SELECT json_agg(mr.role_id) FROM guild_member_roles mr WHERE mr.guild_id=gm.guild_id AND mr.user_id=gm.user_id),'[]') AS roles FROM users u JOIN guild_members gm ON gm.user_id=u.id LEFT JOIN user_profiles up ON up.user_id=u.id LEFT JOIN user_presence pr ON pr.user_id=u.id WHERE gm.guild_id=$1 ORDER BY u.username LIMIT 1000`,[id]);
  return result.rows;
 });
 app.delete("/api/v1/guilds/:id/members/:userId",async(request,reply)=>{
@@ -699,9 +833,20 @@ app.delete("/api/v1/guilds/:id/members/:userId",async(request,reply)=>{
  const guild=await db.query("SELECT owner_id FROM guilds WHERE id=$1",[id]);
  if(!guild.rowCount)return reply.code(404).send({message:"Community not found"});
  if(userId===guild.rows[0].owner_id)return reply.code(403).send({message:"Owner cannot be removed"});
- if(user.id!==userId && user.id!==guild.rows[0].owner_id)return reply.code(403).send({message:"Only owners can remove other members"});
- const removed=await db.query("DELETE FROM guild_members gm USING guilds g WHERE gm.guild_id=$1 AND gm.user_id=$2 AND g.id=gm.guild_id AND g.owner_id<>gm.user_id AND ($3=gm.user_id OR $3=g.owner_id) RETURNING gm.user_id",[id,userId,user.id]);
+ let moderated=false;
+ if(user.id!==userId){
+  // Kicking needs KICK_MEMBERS and a strictly higher top role than the target (owners bypass).
+  const access=await guildAccess(db,id,user.id);
+  if(!access||access.kind!=="community"||!has(access.perms,Permissions.KICK_MEMBERS))return reply.code(403).send({message:"Only owners can remove other members"});
+  const targetTop=await db.query("SELECT COALESCE(max(r.position),0) AS top FROM guild_member_roles mr JOIN guild_roles r ON r.id=mr.role_id WHERE mr.guild_id=$1 AND mr.user_id=$2",[id,userId]);
+  if(!access.owner&&Number(targetTop.rows[0].top)>=access.top)return reply.code(403).send({message:"Target has an equal or higher role"});
+  moderated=true;
+ }
+ const removed=await db.query("DELETE FROM guild_members gm USING guilds g WHERE gm.guild_id=$1 AND gm.user_id=$2 AND g.id=gm.guild_id AND g.owner_id<>gm.user_id AND ($3=gm.user_id OR $4::boolean) RETURNING gm.user_id",[id,userId,user.id,moderated]);
  if(!removed.rowCount)return reply.code(404).send({message:"Membership not found or removal not permitted"});
+ if(moderated)await db.query("INSERT INTO guild_audit_log(guild_id,actor_id,action,target_id) VALUES($1,$2,'member.kick',$3)",[id,user.id,userId]);
+ await publishSecurityEvent({kind:"dispatch",guild:id,t:"GUILD_MEMBER_REMOVE",d:{guild_id:id,user_id:userId}});
+ await publishSecurityEvent({kind:"dispatch",users:[userId],t:"GUILD_DELETE",d:{id}});
  const channels=await db.query("SELECT id FROM channels WHERE guild_id=$1",[id]);
  evictMemberSockets(userId,channels.rows.map((row:{id:string})=>row.id));
  await publishSecurityEvent({kind:"member",user:userId,guild:id});
@@ -715,7 +860,7 @@ app.get("/api/v10/guilds/:id/channels", async (request, reply) => {
   if (!uuid.safeParse(id).success) return reply.code(400).send({ message:"Invalid guild ID" });
   const allowed=await db.query("SELECT 1 FROM guild_members WHERE guild_id=$1 AND user_id=$2",[id,user.id]);
   if(!allowed.rowCount)return reply.code(403).send({message:"Forbidden"});
-  const r=await db.query("SELECT c.id,c.name,c.kind FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id WHERE gm.user_id=$1 AND c.guild_id=$2",[user.id,id]);
+  const r=await db.query("SELECT c.id,c.name,c.kind,c.topic,c.position,c.parent_id,(SELECT max(m.created_at) FROM messages m WHERE m.channel_id=c.id) AS last_message_at,rs.last_read_at FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN channel_read_states rs ON rs.channel_id=c.id AND rs.user_id=gm.user_id WHERE gm.user_id=$1 AND c.guild_id=$2 ORDER BY c.position,c.created_at",[user.id,id]);
   return r.rows;
 });
 app.get("/api/v10/channels/:id/messages", async (request, reply) => {
@@ -724,7 +869,16 @@ app.get("/api/v10/channels/:id/messages", async (request, reply) => {
   if (!user) return reply.code(401).send({ message:"Unauthorized" });
   if (!uuid.safeParse(id).success) return reply.code(400).send({ message:"Invalid channel ID" });
   if (!await member(user.id,id)) return reply.code(403).send({ message:"Forbidden" });
-  const r=await db.query("SELECT id,channel_id,author_id,ciphertext,algorithm,created_at FROM messages WHERE channel_id=$1 ORDER BY created_at DESC,id DESC LIMIT 50",[id]);
+  const page=z.object({before:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(100).default(50)}).safeParse(request.query);
+  if(!page.success)return reply.code(400).send({message:"Invalid pagination"});
+  if(page.data.before){
+   const cursor=await db.query("SELECT 1 FROM messages WHERE id=$1 AND channel_id=$2",[page.data.before,id]);
+   if(!cursor.rowCount)return reply.code(400).send({message:"Cursor does not belong to this channel"});
+  }
+  const r=await db.query(`SELECT m.id,m.channel_id,m.author_id,u.username AS author_username,m.ciphertext,m.algorithm,m.created_at,m.edited_at,m.reply_to,
+    COALESCE((SELECT json_agg(json_build_object('emoji',x.emoji,'count',x.n,'me',x.me) ORDER BY x.first) FROM (SELECT emoji,count(*)::int AS n,bool_or(user_id=$3) AS me,min(created_at) AS first FROM message_reactions WHERE message_id=m.id GROUP BY emoji) x),'[]') AS reactions,
+    EXISTS(SELECT 1 FROM message_pins p WHERE p.message_id=m.id) AS pinned
+   FROM messages m LEFT JOIN users u ON u.id=m.author_id WHERE m.channel_id=$1 AND ($2::uuid IS NULL OR (m.created_at,m.id)<(SELECT b.created_at,b.id FROM messages b WHERE b.id=$2::uuid)) ORDER BY m.created_at DESC,m.id DESC LIMIT $4`,[id,page.data.before??null,user.id,page.data.limit]);
   return r.rows.reverse();
 });
 app.post("/api/v10/channels/:id/messages", async (request, reply) => {
@@ -735,32 +889,47 @@ app.post("/api/v10/channels/:id/messages", async (request, reply) => {
   if (!await member(user.id,id)) return reply.code(403).send({ message:"Forbidden" });
   const parsed=encryptedEnvelope.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ message:"Only opaque ciphertext envelopes are accepted" });
+  const access=await channelAccess(db,id,user.id);
+  if(!access||!has(access.perms,Permissions.SEND_MESSAGES))return reply.code(403).send({message:"Missing SEND_MESSAGES permission"});
+  if(access.channel.kind==="category")return reply.code(400).send({message:"Categories do not hold messages"});
+  if(access.channel.kind==="announcement"&&!has(access.perms,Permissions.MANAGE_MESSAGES))return reply.code(403).send({message:"Only moderators can post in announcement channels"});
+  if(access.kind==="dm"){
+   const blocked=await db.query("SELECT 1 FROM guild_members peer JOIN user_relationships r ON r.status='blocked' AND ((r.user_id=$2 AND r.target_id=peer.user_id) OR (r.user_id=peer.user_id AND r.target_id=$2)) JOIN guilds g ON g.id=peer.guild_id AND g.dm_key IS NOT NULL WHERE peer.guild_id=$1 AND peer.user_id<>$2 LIMIT 1",[access.guildId,user.id]);
+   if(blocked.rowCount)return reply.code(403).send({message:"You cannot message this user"});
+  }
+  const replyTo=z.string().uuid().safeParse((request.body as any)?.reply_to);
+  let replyId:string|null=null;
+  if(replyTo.success){const target=await db.query("SELECT 1 FROM messages WHERE id=$1 AND channel_id=$2",[replyTo.data,id]);if(target.rowCount)replyId=replyTo.data}
   const messageId=randomUUID();
   // INSERT ... SELECT performs the membership check within the write statement,
   // avoiding the separate authorization-query/INSERT race on this route.
   const r=await db.query(
-    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm) SELECT $1,c.id,$3,$4,$5 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 AND (CASE WHEN left($4,1)='{' THEN COALESCE(($4::jsonb->'context'->>'epoch')::bigint,-1)=COALESCE(e.epoch,1) ELSE true END) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at",
-    [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm]
+    "INSERT INTO messages(id,channel_id,author_id,ciphertext,algorithm,reply_to) SELECT $1,c.id,$3,$4,$5,$6 FROM channels c JOIN guild_members gm ON gm.guild_id=c.guild_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$2 AND gm.user_id=$3 AND (CASE WHEN left($4,1)='{' THEN COALESCE(($4::jsonb->'context'->>'epoch')::bigint,-1)=COALESCE(e.epoch,1) ELSE true END) RETURNING id,channel_id,author_id,ciphertext,algorithm,created_at,edited_at,reply_to",
+    [messageId,id,user.id,parsed.data.ciphertext,parsed.data.algorithm,replyId]
   );
   if(!r.rowCount)return reply.code(403).send({message:"Forbidden"});
+  userTyping.delete(user.id+":"+id); // sending ends the typing session
   await publishSecurityEvent({kind:"message",channel:id,message:r.rows[0].id});
-  return reply.code(201).send(r.rows[0]);
+  return reply.code(201).send({...r.rows[0],author_username:user.username,reactions:[],pinned:false});
 });
-// Author-only ciphertext deletion. SQL checks ownership and current membership atomically.
+// Author or MANAGE_MESSAGES deletion. SQL checks ownership/moderation and current membership atomically.
 app.delete("/api/v10/channels/:id/messages/:messageId",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const {id,messageId}=request.params as {id:string,messageId:string};
  if(!uuid.safeParse(id).success||!uuid.safeParse(messageId).success)return reply.code(400).send({message:"Invalid ID"});
+ const access=await channelAccess(db,id,user.id);
+ const moderator=!!access&&access.kind==="community"&&has(access.perms,Permissions.MANAGE_MESSAGES);
  const client=await db.connect();
  try{
   await client.query("BEGIN");
   const result=await client.query(
-   "DELETE FROM messages m USING channels c,guild_members gm WHERE m.id=$1 AND m.channel_id=$2 AND m.author_id=$3 AND c.id=m.channel_id AND gm.guild_id=c.guild_id AND gm.user_id=$3 RETURNING m.id",
-   [messageId,id,user.id]
+   "DELETE FROM messages m USING channels c,guild_members gm WHERE m.id=$1 AND m.channel_id=$2 AND (m.author_id=$3 OR $4::boolean) AND c.id=m.channel_id AND gm.guild_id=c.guild_id AND gm.user_id=$3 RETURNING m.id,m.author_id",
+   [messageId,id,user.id,moderator]
   );
   if(!result.rowCount){await client.query("ROLLBACK");return reply.code(404).send({message:"Message not found or deletion not permitted"})}
   await client.query("INSERT INTO message_tombstones(id,channel_id,deleted_by) VALUES($1,$2,$3)",[messageId,id,user.id]);
+  if(access&&result.rows[0].author_id!==user.id)await client.query("INSERT INTO guild_audit_log(guild_id,actor_id,action,target_id,details) VALUES($1,$2,'message.delete',$3,$4::jsonb)",[access.guildId,user.id,messageId,JSON.stringify({channel:id,author:result.rows[0].author_id})]);
   await client.query("COMMIT");
  }catch(error){await client.query("ROLLBACK");throw error}
  finally{client.release()}
@@ -787,20 +956,25 @@ app.get("/api/v1/channels/:id/keys",async(request,reply)=>{
  if(!await member(user.id,id))return reply.code(403).send({message:"Forbidden"});
  const rows=await db.query("SELECT c.guild_id,COALESCE(e.epoch,1)::text AS epoch FROM channels c LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$1",[id]);
  if(!rows.rowCount)return reply.code(404).send({message:"Channel not found"});
- const recipients=await db.query("SELECT d.id,d.user_id,d.identity_key FROM user_devices d JOIN guild_members gm ON gm.user_id=d.user_id WHERE gm.guild_id=$1 AND d.revoked_at IS NULL ORDER BY d.user_id,d.id",[rows.rows[0].guild_id]);
- const wrapped=await db.query("SELECT device_id,wrapped_key FROM channel_device_keys WHERE channel_id=$1 AND epoch=$2",[id,rows.rows[0].epoch]);
- return {epoch:Number(rows.rows[0].epoch),recipients:recipients.rows,wrapped:wrapped.rows};
+ const recipients=await db.query("SELECT d.id,d.user_id,u.username,d.identity_key,d.public_bundle,d.attestation,d.created_at FROM user_devices d JOIN users u ON u.id=d.user_id JOIN guild_members gm ON gm.user_id=d.user_id WHERE gm.guild_id=$1 AND d.revoked_at IS NULL ORDER BY d.user_id,d.created_at,d.id",[rows.rows[0].guild_id]);
+ // Each wrapped key is encrypted to one device; callers receive only their own devices' envelopes.
+ const wrapped=await db.query("SELECT k.device_id,k.wrapped_key,k.granted_by FROM channel_device_keys k JOIN user_devices d ON d.id=k.device_id WHERE k.channel_id=$1 AND k.epoch=$2 AND d.user_id=$3",[id,rows.rows[0].epoch,user.id]);
+ const granted=await db.query("SELECT device_id FROM channel_device_keys WHERE channel_id=$1 AND epoch=$2",[id,rows.rows[0].epoch]);
+ const claim=await db.query("SELECT creator_device_id,key_commitment FROM channel_epoch_keys WHERE channel_id=$1 AND epoch=$2",[id,rows.rows[0].epoch]);
+ const history=await db.query("SELECT k.epoch::int AS epoch,k.device_id,k.wrapped_key,k.granted_by,c.key_commitment FROM channel_device_keys k JOIN user_devices d ON d.id=k.device_id AND d.user_id=$2 LEFT JOIN channel_epoch_keys c ON c.channel_id=k.channel_id AND c.epoch=k.epoch WHERE k.channel_id=$1 AND k.epoch<$3 ORDER BY k.epoch DESC LIMIT 200",[id,user.id,rows.rows[0].epoch]);
+ return {epoch:Number(rows.rows[0].epoch),recipients:recipients.rows,wrapped:wrapped.rows,granted_device_ids:granted.rows.map((r:{device_id:string})=>r.device_id),claim:claim.rows[0]??null,history:history.rows};
 });
 app.put("/api/v1/channels/:id/keys/:deviceId",async(request,reply)=>{
  const user=await auth(request.headers.authorization);
  if(!user)return reply.code(401).send({message:"Unauthorized"});
  const {id,deviceId}=request.params as {id:string,deviceId:string};
  if(!uuid.safeParse(id).success||!uuid.safeParse(deviceId).success)return reply.code(400).send({message:"Invalid ID"});
- const body=z.object({epoch:z.number().int().positive(),wrapped_key:z.record(z.string(),z.unknown())}).safeParse(request.body);
+ const body=z.object({epoch:z.number().int().positive(),wrapped_key:z.record(z.string(),z.unknown()),granter_device_id:z.string().uuid().optional()}).safeParse(request.body);
  if(!body.success)return reply.code(400).send({message:"Invalid key envelope"});
+ if(JSON.stringify(body.data.wrapped_key).length>16384)return reply.code(400).send({message:"Key envelope too large"});
  const inserted=await db.query(
- "INSERT INTO channel_device_keys(channel_id,epoch,device_id,wrapped_key) SELECT c.id,$2,d.id,$4::jsonb FROM channels c JOIN guild_members author ON author.guild_id=c.guild_id JOIN user_devices d ON d.id=$3 AND d.revoked_at IS NULL JOIN guild_members recipient ON recipient.guild_id=c.guild_id AND recipient.user_id=d.user_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$1 AND author.user_id=$5 AND COALESCE(e.epoch,1)=$2 ON CONFLICT(channel_id,epoch,device_id) DO NOTHING RETURNING device_id",
- [id,body.data.epoch,deviceId,JSON.stringify(body.data.wrapped_key),user.id]);
+ "INSERT INTO channel_device_keys(channel_id,epoch,device_id,wrapped_key,granted_by) SELECT c.id,$2,d.id,$4::jsonb,(SELECT g.id FROM user_devices g WHERE g.id=$6::uuid AND g.user_id=$5 AND g.revoked_at IS NULL) FROM channels c JOIN guild_members author ON author.guild_id=c.guild_id JOIN user_devices d ON d.id=$3 AND d.revoked_at IS NULL JOIN guild_members recipient ON recipient.guild_id=c.guild_id AND recipient.user_id=d.user_id LEFT JOIN guild_key_epochs e ON e.guild_id=c.guild_id WHERE c.id=$1 AND author.user_id=$5 AND COALESCE(e.epoch,1)=$2 ON CONFLICT(channel_id,epoch,device_id) DO NOTHING RETURNING device_id",
+ [id,body.data.epoch,deviceId,JSON.stringify(body.data.wrapped_key),user.id,body.data.granter_device_id??null]);
  if(!inserted.rowCount)return reply.code(409).send({message:"Key rejected: membership, epoch or duplicate"});
  return reply.code(201).send({device_id:deviceId,epoch:body.data.epoch});
 });
@@ -884,7 +1058,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
   let lastHeartbeat = Date.now();
   let sessionHash:string|null=null;
   let checkingSession=false;
-  let windowStart = Date.now(), windowMessages = 0;
+  let windowStart = Date.now(), windowMessages = 0, lastPresence = 0;
   const heartbeatMs = process.env.NODE_ENV === "test" ? 1000 : 30000;
   const watchdog = setInterval(async () => {
     if (Date.now() - lastHeartbeat > heartbeatMs * 2.5) {socket.close(4009,"Heartbeat timeout");return}
@@ -912,7 +1086,11 @@ app.get("/gateway", { websocket:true }, (socket) => {
       if (now - windowStart >= 10000) { windowStart = now; windowMessages = 0; }
       if (++windowMessages > 100) { socket.close(4008,"Gateway rate limit exceeded"); return; }
       const payload=JSON.parse(data.toString());
-      if (payload.op===1) { lastHeartbeat=Date.now(); socket.send(JSON.stringify({ op:11,d:null })); return; }
+      if (payload.op===1) {
+        lastHeartbeat=Date.now(); socket.send(JSON.stringify({ op:11,d:null }));
+        if(identity&&Date.now()-lastPresence>20000){lastPresence=Date.now();void touchPresence(identity.id).catch(error=>app.log.warn(error))}
+        return;
+      }
       if (payload.op===2) {
         if(identity) { socket.close(4005,"Already authenticated");return; }
         identity=await auth("Bearer "+String(payload.d?.token ?? ""));
@@ -925,6 +1103,7 @@ app.get("/gateway", { websocket:true }, (socket) => {
         }
         if (!identity) { socket.close(4004,"Authentication failed"); return; }
         socket.send(JSON.stringify({ op:0,t:"READY",s:null,d:{ user:identity } }));
+        lastPresence=Date.now();void touchPresence(identity.id).catch(error=>app.log.warn(error));
       } else if (payload.op===42 && identity) {
         const channelId=payload.d?.channel_id;
         if (!uuid.safeParse(channelId).success || !await member(identity.id,channelId)) return;
@@ -933,6 +1112,15 @@ app.get("/gateway", { websocket:true }, (socket) => {
         sockets.get(channelId)!.add(socket);
         subscriptions.add(channelId);
         socket.send(JSON.stringify({op:0,t:"CHANNEL_SUBSCRIBED",s:null,d:{channel_id:channelId}}));
+      } else if (payload.op===44 && identity) {
+        // Typing indicator: only for a channel this socket is subscribed to, throttled per user/channel.
+        const channelId=payload.d?.channel_id;
+        if(typeof channelId!=="string"||!subscriptions.has(channelId))return;
+        const key=identity.id+":"+channelId,last=userTyping.get(key)??0;
+        if(Date.now()-last<2500)return;
+        if(userTyping.size>10000)userTyping.clear();
+        userTyping.set(key,Date.now());
+        await publishEphemeral({kind:"typing",channel:channelId,user:identity.id,username:identity.username});
       } else if (payload.op===43 && identity) {
         const channelId=payload.d?.channel_id;
         if(typeof channelId!=="string")return;
@@ -945,13 +1133,40 @@ app.get("/gateway", { websocket:true }, (socket) => {
   socket.on("close",()=>{
     clearInterval(watchdog);
     const userId=socketIdentity.get(socket);
-    if(userId){const connections=userConnections.get(userId);connections?.delete(socket);if(!connections?.size)userConnections.delete(userId)}
+    if(userId){
+      const connections=userConnections.get(userId);connections?.delete(socket);
+      if(!connections?.size){userConnections.delete(userId);void markOffline(userId).catch(error=>app.log.warn(error))}
+    }
     for (const id of subscriptions) {
       sockets.get(id)?.delete(socket);
       if (!sockets.get(id)?.size) sockets.delete(id);
     }
   });
 });
+
+// Presence is stored as a heartbeat timestamp so every API instance derives the same status.
+async function touchPresence(userId:string){
+ const r=await db.query("WITH old AS (SELECT last_seen FROM user_presence WHERE user_id=$1) INSERT INTO user_presence(user_id,last_seen) VALUES($1,now()) ON CONFLICT(user_id) DO UPDATE SET last_seen=now() RETURNING COALESCE((SELECT last_seen<now()-interval '90 seconds' FROM old),true) AS was_offline",[userId]);
+ if(r.rows[0]?.was_offline)await publishEphemeral({kind:"presence",user:userId});
+}
+async function markOffline(userId:string){
+ // Another instance holding a live connection refreshes last_seen on its next heartbeat.
+ await db.query("UPDATE user_presence SET last_seen=now()-interval '5 minutes' WHERE user_id=$1",[userId]);
+ await publishEphemeral({kind:"presence",user:userId});
+}
+registerCommunity(app,{db,auth,publish:publishSecurityEvent,publishEphemeral,takeQuota});
+async function verifyPassword(userId:string,password:string){
+ const owner=await db.query("SELECT password_salt,password_hash FROM users WHERE id=$1",[userId]);
+ if(!owner.rowCount)return false;
+ const proof=Buffer.from(await passwordHash(password,owner.rows[0].password_salt),"hex"),expected=Buffer.from(owner.rows[0].password_hash,"hex");
+ return proof.length===expected.length&&timingSafeEqual(proof,expected);
+}
+registerSecurity(app,{db,auth,publish:publishSecurityEvent,takeQuota,verifyPassword});
+// Bootstrap instance administrators from configuration (comma-separated usernames).
+if(process.env.INSTANCE_ADMINS){
+ const names=process.env.INSTANCE_ADMINS.split(",").map(s=>s.trim()).filter(Boolean);
+ if(names.length)await db.query("UPDATE users SET is_admin=true WHERE username=ANY($1::text[])",[names]);
+}
 
 try {
   await db.query("SELECT 1");

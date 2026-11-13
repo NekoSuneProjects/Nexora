@@ -6,3 +6,8 @@ test("web client provides usable testing navigation, gateway state and locked co
  assert.match(script,/function updateComposer/);assert.match(script,/connectionState\("Connected",true\)/);
  assert.match(script,/CHANNEL_ACCESS_REVOKED/);assert.match(script,/MESSAGE_DELETE/);
 });
+test("settings panes use the flattening add() helper (Element.append prints arrays as text)",async()=>{
+ const script=await readFile(new URL("../apps/web/app.js",import.meta.url),"utf8");
+ assert.doesNotMatch(script,/pane\.append\(/);
+ assert.match(script,/function add\(el, \.\.\.kids\)/);
+});

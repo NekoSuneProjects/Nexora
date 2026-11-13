@@ -8,6 +8,13 @@ const BufferCompat={
  decode(text){if(!/^[A-Za-z0-9_-]+$/.test(text))throw Error("Invalid base64url");const s=atob(text.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-text.length%4)%4));return Uint8Array.from(s,c=>c.charCodeAt(0))}
 };
 const subtle=globalThis.crypto.subtle;
+// Canonical JSON (recursively sorted keys). Wrapped keys are stored in PostgreSQL jsonb,
+// which re-orders object keys, so signatures and context checks must not depend on order.
+export function canonicalJson(value){
+ if(Array.isArray(value))return "["+value.map(canonicalJson).join(",")+"]";
+ if(value&&typeof value==="object")return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+canonicalJson(value[k])).join(",")+"}";
+ return JSON.stringify(value);
+}
 export async function createDevice(){
  const agreement=await subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveBits"]);
  const signing=await subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign","verify"]);
@@ -42,21 +49,21 @@ export async function wrapRoomKey(roomKey,device,recipientBundle,context){
  const hkdf=await subtle.importKey("raw",shared,"HKDF",false,["deriveKey"]);
  const wrapping=await subtle.deriveKey({name:"HKDF",hash:"SHA-256",salt,info:encoder.encode("nexora-room-wrap-v1")},hkdf,{name:"AES-GCM",length:256},false,["encrypt"]);
  const payload=await subtle.exportKey("raw",roomKey);
- const ciphertext=await subtle.encrypt({name:"AES-GCM",iv:nonce,additionalData:encoder.encode(JSON.stringify(context))},wrapping,payload);
- const envelope={version:1,ephemeral:await subtle.exportKey("jwk",ephemeral.publicKey),salt:b64(salt),nonce:b64(nonce),ciphertext:b64(ciphertext),context};
- const signed=encoder.encode(JSON.stringify(envelope));
+ const ciphertext=await subtle.encrypt({name:"AES-GCM",iv:nonce,additionalData:encoder.encode(canonicalJson(context))},wrapping,payload);
+ const envelope={version:2,ephemeral:await subtle.exportKey("jwk",ephemeral.publicKey),salt:b64(salt),nonce:b64(nonce),ciphertext:b64(ciphertext),context};
+ const signed=encoder.encode(canonicalJson(envelope));
  return {...envelope,signer:await publicBundle(device),signature:b64(await subtle.sign({name:"ECDSA",hash:"SHA-256"},device.signing.privateKey,signed))};
 }
 export async function unwrapRoomKey(envelope,device,expectedFingerprint,expectedContext){
- if(envelope.version!==1||JSON.stringify(envelope.context)!==JSON.stringify(expectedContext))throw Error("Wrapped key context mismatch");
+ if(envelope.version!==2||canonicalJson(envelope.context)!==canonicalJson(expectedContext))throw Error("Wrapped key context mismatch");
  if(await fingerprint(envelope.signer)!==expectedFingerprint)throw Error("Sender device identity mismatch");
  const {signature,signer,...signedFields}=envelope;
  const verifyKey=await subtle.importKey("jwk",signer.signing,{name:"ECDSA",namedCurve:"P-256"},false,["verify"]);
- if(!await subtle.verify({name:"ECDSA",hash:"SHA-256"},verifyKey,un64(signature),encoder.encode(JSON.stringify(signedFields))))throw Error("Invalid device signature");
+ if(!await subtle.verify({name:"ECDSA",hash:"SHA-256"},verifyKey,un64(signature),encoder.encode(canonicalJson(signedFields))))throw Error("Invalid device signature");
  const ephemeral=await subtle.importKey("jwk",envelope.ephemeral,{name:"ECDH",namedCurve:"P-256"},false,[]);
  const shared=await subtle.deriveBits({name:"ECDH",public:ephemeral},device.agreement.privateKey,256);
  const hkdf=await subtle.importKey("raw",shared,"HKDF",false,["deriveKey"]);
  const key=await subtle.deriveKey({name:"HKDF",hash:"SHA-256",salt:un64(envelope.salt),info:encoder.encode("nexora-room-wrap-v1")},hkdf,{name:"AES-GCM",length:256},false,["decrypt"]);
- const raw=await subtle.decrypt({name:"AES-GCM",iv:un64(envelope.nonce),additionalData:encoder.encode(JSON.stringify(expectedContext))},key,un64(envelope.ciphertext));
+ const raw=await subtle.decrypt({name:"AES-GCM",iv:un64(envelope.nonce),additionalData:encoder.encode(canonicalJson(expectedContext))},key,un64(envelope.ciphertext));
  return subtle.importKey("raw",raw,{name:"AES-GCM"},true,["encrypt","decrypt"]);
 }

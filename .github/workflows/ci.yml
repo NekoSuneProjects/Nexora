@@ -34,6 +34,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: node --check apps/web/app.js
+      - run: node --check apps/web/e2ee.mjs
       - run: node --check scripts/start-api.mjs
       - name: Build deployment images
         run: |
@@ -58,15 +59,25 @@ jobs:
         run: |
           bash scripts/migrate.sh
           bash scripts/migrate.sh
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM schema_migrations" | grep -qx 6
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM schema_migrations" | grep -qx 8
       - name: Apply persisted security event migration
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0005_security_outbox.sql
       - name: Apply message tombstones migration
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0006_message_tombstones.sql
       - name: Apply E2EE channel epoch migration
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0007_channel_keys.sql
+      # Re-applied last: 0008 supersedes trigger functions that 0005/0007 define.
+      - name: Apply community core migration twice (idempotency check)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0008_community_core.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0008_community_core.sql
+      - name: Apply P0 security migration twice (idempotency check)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0009_p0_security.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f database/migrations/0009_p0_security.sql
       - name: Integration tests
-        run: node --test tests-integration/*.test.mjs
+        # Serial: suites start their own API processes and share quota tables.
+        run: node --test --test-concurrency=1 tests-integration/*.test.mjs
       - name: Verify an isolated PostgreSQL backup restore
         shell: bash
         run: |
@@ -78,3 +89,37 @@ jobs:
           pg_restore --dbname="$RESTORE_URL" --no-owner --no-acl --exit-on-error "$RUNNER_TEMP/nexora-ci.dump"
           psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS restored_users FROM users"
           psql "$RESTORE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT to_regclass('public.messages') IS NOT NULL" | grep -qx t
+  e2e:
+    # Real-browser flows (two users, E2EE chat, passkeys, key backup, device approval, moderation).
+    # Separate job: its own PostgreSQL, so registration quotas are not shared with integration tests.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: nexora_e2e
+          POSTGRES_PASSWORD: nexora_e2e_ci_only
+          POSTGRES_DB: nexora_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexora_e2e -d nexora_e2e"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://nexora_e2e:nexora_e2e_ci_only@127.0.0.1:5432/nexora_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      # scripts/start-api.mjs (spawned by the suite) applies the schema and all migrations.
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: test-results/
+          retention-days: 7
