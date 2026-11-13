@@ -1,0 +1,3 @@
+import test from "node:test";import assert from "node:assert/strict";import{readFile}from"node:fs/promises";
+test("single-session logout closes only matching websocket credentials",async()=>{const s=await readFile(new URL("../apps/api/src/index.ts",import.meta.url),"utf8");assert.match(s,/closeUserConnections\(owner\.rows\[0\]\.user_id,sessionHash\)/);assert.match(s,/socketSessionHash\.get\(socket\)!==sessionHash/);});
+test("logout all closes tracked user connections",async()=>{const s=await readFile(new URL("../apps/api/src/index.ts",import.meta.url),"utf8");assert.match(s,/closeUserConnections\(user\.id\)/);assert.match(s,/userConnections\.get\(identity\.id\)!\.add\(socket\)/);assert.match(s,/socket.close\(4004,"Session revoked"\)/);});

@@ -1,0 +1,9 @@
+# Manual Linux AppImage build container. Not a desktop application server.
+FROM node:22-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends libnss3 libgtk-3-0 libasound2 libgbm1 libx11-xcb1 libxss1 libxtst6 libxrandr2 libatspi2.0-0 libdrm2 fakeroot rpm && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY apps/desktop/package.json ./
+RUN npm install
+COPY apps/desktop/ ./
+# Mount /artifacts on the host to retrieve build results.
+CMD ["sh","-c","npm run build:linux && mkdir -p /artifacts && cp -a dist/. /artifacts/"]

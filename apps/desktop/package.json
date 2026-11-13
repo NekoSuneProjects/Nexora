@@ -1,0 +1,44 @@
+{
+  "name": "nexora-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nexora desktop testing client",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build:linux": "electron-builder --linux AppImage --publish never",
+    "build:win": "electron-builder --win nsis --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "uk.co.nexora.desktop",
+    "productName": "Nexora",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "setup.html",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

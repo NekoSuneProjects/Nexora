@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexora</title>
+<!-- sri:head -->
+<link rel="stylesheet" href="/app.css" integrity="sha384-H9ePMWeh6ROSWyfmUFErDCX8R5scaFryKDcglzLYm79+ldwJCyozRfqHpttGqomH">
+<link rel="modulepreload" href="/crypto.mjs" integrity="sha384-oQEZ5ph6/zpHDZFM9BTC3BxA4JBFtiz7pqC8B41wiVF5LcZDDqaqqZ6z9EfRoIbt">
+<link rel="modulepreload" href="/private-key-vault.mjs" integrity="sha384-ycudg1x25UeTLiP73YqGH46FWm0+0iW9pVqNHb7dyU9VZ3aNQcuz5uihqXIIirF2">
+<link rel="modulepreload" href="/e2ee.mjs" integrity="sha384-/cz/gqrwKTOP+v/vzeliJwr2olyJO8+akLVk0HDUq/w95S6mThi8sdGaNp5j/ClE">
+<!-- /sri:head -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<p id="status" role="status" aria-live="polite"></p>
+
+<!-- Sign in / register -->
+<section id="logged-out" class="auth">
+ <div class="auth-card">
+  <h1>Nexora</h1>
+  <p class="muted">Your space. Your people. Your privacy.</p>
+  <div class="warning"><strong>Developer preview — not audited.</strong> Cryptographic chat is an unreviewed prototype (trust-on-first-use device keys, no independent review). Do not transmit confidential messages.</div>
+  <form id="login-form">
+   <label for="username">Username</label>
+   <input id="username" minlength="3" maxlength="32" autocomplete="username" required pattern="[A-Za-z0-9_]+">
+   <label for="password">Password (12+ characters)</label>
+   <input id="password" type="password" minlength="12" autocomplete="current-password" required>
+   <details>
+    <summary>Two-factor authentication</summary>
+    <label for="mfa-code">Authenticator code</label>
+    <input id="mfa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code">
+    <label for="recovery-code">Or a one-time recovery code</label>
+    <input id="recovery-code" autocomplete="one-time-code" maxlength="32" pattern="[a-f0-9]{32}" placeholder="32-character recovery code">
+   </details>
+   <div class="actions"><button type="submit" data-action="login">Sign in</button><button type="button" id="register" class="secondary">Create account</button></div>
+   <div class="actions"><button type="button" id="passkey-login" class="secondary">🔑 Sign in with a passkey</button></div>
+  </form>
+  <p class="small muted"><a href="/">Back to the Nexora homepage</a></p>
+ </div>
+</section>
+
+<!-- Signed-in workspace: server rail · sidebar · chat · members -->
+<section id="logged-in" class="hidden">
+ <div class="shell workspace" id="shell">
+  <aside class="server-rail" aria-label="Servers">
+   <button type="button" class="rail-item home" id="home-button" title="Direct messages &amp; friends">✦</button>
+   <div class="rail-sep"></div>
+   <div id="guilds"></div>
+   <button type="button" class="rail-item add" id="add-server" title="Create or join a server">+</button>
+  </aside>
+
+  <nav class="sidebar" aria-label="Channels">
+   <header class="sidebar-header"><span id="sidebar-title">Direct messages</span><button type="button" class="ghost" id="guild-menu-button" title="Server menu">⌄</button></header>
+   <div class="sidebar-scroll" id="channels"></div>
+   <footer class="user-panel">
+    <div id="self-avatar"></div>
+    <div class="who"><strong id="user"></strong><span id="self-status">Online</span></div>
+    <button type="button" class="ghost" id="vault-button" title="Encryption device">🔒</button>
+    <button type="button" class="ghost" id="settings-button" title="User settings">⚙</button>
+   </footer>
+  </nav>
+
+  <main class="chat">
+   <header class="channel-header">
+    <button type="button" class="ghost mobile-only" id="toggle-sidebar">☰</button>
+    <h2 id="channel-title">Friends</h2>
+    <span class="topic" id="channel-topic"></span>
+    <span class="spacer"></span>
+    <span id="e2ee-state" class="pill">E2EE</span>
+    <span id="gateway-state" class="connection" role="status">Offline</span>
+    <button type="button" class="ghost" id="pins-button" title="Pinned messages">📌</button>
+    <button type="button" class="ghost" id="members-button" title="Member list">👥</button>
+    <button type="button" class="ghost" id="refresh-workspace" title="Refresh">⟳</button>
+   </header>
+   <div id="friends-view" class="friends"></div>
+   <div id="chat-view" class="hidden">
+    <div id="messages" aria-live="polite"></div>
+   </div>
+   <div class="typing" id="typing"></div>
+   <div class="composer hidden" id="composer">
+    <form id="send-encrypted-form">
+     <div class="context-bar hidden" id="composer-context"><span id="composer-context-text"></span><span class="spacer"></span><button type="button" class="ghost" id="composer-cancel">✕</button></div>
+     <div class="lock-note hidden" id="composer-lock"></div>
+     <div class="input-row">
+      <button type="button" class="ghost" id="emoji-button" title="Emoji">☺</button>
+      <label for="chat-plaintext" class="hidden">Message</label>
+      <textarea id="chat-plaintext" maxlength="4000" rows="1" placeholder="Message"></textarea>
+      <button type="submit" id="send-encrypted-button">Send</button>
+     </div>
+    </form>
+   </div>
+  </main>
+
+  <aside class="members" id="members" aria-label="Members"></aside>
+ </div>
+</section>
+
+<!-- Static settings sections, moved into the settings modal by app.js -->
+<div class="hidden" id="settings-templates">
+ <section id="settings-encryption">
+  <h2>Encryption &amp; devices</h2>
+  <p class="muted">Messages are encrypted in this browser before upload. Your private device keys are kept in an encrypted vault in this browser and never leave it. Device identities are trusted on first use — compare safety numbers with people you talk to.</p>
+  <p id="device-vault-status" class="muted">No device key unlocked.</p>
+  <form id="device-unlock-form">
+   <label for="device-unlock-passphrase">Unlock this browser's device vault</label>
+   <div class="row"><input id="device-unlock-passphrase" type="password" required autocomplete="current-password"><button type="submit">Unlock</button></div>
+  </form>
+  <h3>Set up this browser as a new device</h3>
+  <form id="device-enroll-form">
+   <label for="device-name">Device label</label>
+   <input id="device-name" maxlength="80" required placeholder="My laptop">
+   <label for="device-proof">Current account password</label>
+   <input id="device-proof" type="password" autocomplete="current-password" required minlength="12">
+   <label for="device-vault-passphrase">New vault passphrase (16+ characters, not your account password)</label>
+   <input id="device-vault-passphrase" type="password" autocomplete="new-password" required minlength="16">
+   <div class="actions"><button type="submit">Create encrypted device</button></div>
+  </form>
+  <h3>Key backup</h3>
+  <p id="backup-status" class="muted">Unlock this device to manage key backup.</p>
+  <div class="row wrap"><button type="button" id="backup-setup">Turn on key backup</button><button type="button" id="backup-restore" class="secondary">Restore from recovery key</button></div>
+  <h3>Your devices</h3>
+  <p class="small muted">A new device must be approved from one of your existing devices before other people's clients share keys with it.</p>
+  <div id="device-list"></div>
+ </section>
+</div>
+<div id="toasts"></div>
+<script type="module" src="/app.js" integrity="sha384-ppU3LgUMWiE5iuirxIwLCY/vRwYscypS9YCeSAP+opB5X6byo1oPQySmoLC42R7K"></script>
+</body>
+</html>

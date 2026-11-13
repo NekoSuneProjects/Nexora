@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import {readFile} from "node:fs/promises";
+test("human Gateway limits incoming message bursts and active subscriptions",async()=>{const api=await readFile(new URL("../apps/api/src/index.ts",import.meta.url),"utf8");const start=api.indexOf('app.get("/gateway", { websocket:true }');const segment=api.slice(start);assert.match(segment,/now - windowStart >= 10000/);assert.match(segment,/\+\+windowMessages > 100/);assert.match(segment,/subscriptions.size >= 25/);assert.match(segment,/socket.close\(4008/);});

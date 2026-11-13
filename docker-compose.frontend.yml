@@ -1,0 +1,14 @@
+services:
+  nexora-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: nexora-web:local
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:3000}
+      NGINX_ENVSUBST_FILTER: API_UPSTREAM
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    # If the API runs in another Compose project, join its shared Docker network,
+    # or set API_UPSTREAM to a network-reachable backend address.
